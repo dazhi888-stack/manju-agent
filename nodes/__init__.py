@@ -1,12 +1,12 @@
 """节点门面：实际实现已按职责拆到 node_*.py。"""
 from __future__ import annotations
 
-from node_shared import *
-from node_parse import parse_node
-from node_script import script_node
-from node_storyboard import storyboard_node
-from node_validate import _build_feedback, validate_node
-from node_context import (
+from .shared import *
+from .parse import parse_node
+from .script import script_node
+from .storyboard import storyboard_node
+from .validate import _build_feedback, validate_node
+from .context import (
     _format_summaries_for_compress,
     _render_compressed_context,
     _fallback_compressed_context,
@@ -15,7 +15,7 @@ from node_context import (
     _update_story_bible,
     context_compress_node,
 )
-from node_intent import (
+from .intent import (
     _unknown_intent_state,
     _cn_number_to_int,
     _parse_story_id,
@@ -25,10 +25,10 @@ from node_intent import (
     confirm_node,
     error_node,
 )
-from node_retrieve import retrieve_continue_node, retrieve_storyboard_node
-from node_continue import continue_script_node
-from node_modify import modify_script_node
-from node_branch import (
+from .retrieve import retrieve_continue_node, retrieve_storyboard_node
+from .continue_script import continue_script_node
+from .modify import modify_script_node
+from .branch import (
     _format_history_summaries,
     _normalize_issue_part,
     _ledger_from_history,
@@ -38,10 +38,10 @@ from node_branch import (
     _build_branch_feedback,
     branch_validate_node,
 )
-from node_persist import _find_canon_card, persist_story_node
-from node_shot_generate import shot_generate_node
-from node_shot_validate import validate_shot_ooc
-from node_video_prompt import build_video_prompt_node
+from .persist import _find_canon_card, persist_story_node
+from .shot_generate import shot_generate_node
+from .shot_validate import validate_shot_ooc
+from .video_prompt import build_video_prompt_node
 
 __all__ = [
     "parse_node", "script_node", "storyboard_node", "validate_node",

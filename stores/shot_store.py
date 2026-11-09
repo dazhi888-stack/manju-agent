@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import config
-from json_store import read_json, write_json
+from stores.json_store import read_json, write_json
 
 
 def _safe_name(value: str) -> str:

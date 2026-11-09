@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import config
-from render import render_final
+from services.render import render_final
 
 
 def _safe(value: str, fallback: str = "未命名") -> str:

@@ -8,10 +8,10 @@ from pathlib import Path
 from typing import Any
 
 import config
-from json_store import read_json, write_json
-from node_shared import invoke_structured
+from stores.json_store import read_json, write_json
+from nodes.shared import invoke_structured
 from state import GlobalProfileDraft
-from prompts_global import GLOBAL_PROFILE_SYSTEM, build_global_profile_prompt
+from prompts.profile import GLOBAL_PROFILE_SYSTEM, build_global_profile_prompt
 
 
 def _safe_name(value: str) -> str:

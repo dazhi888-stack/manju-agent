@@ -12,12 +12,12 @@ from pydantic import BaseModel
 import config
 from config import *
 from prompts import *
-from render import *
+from services.render import *
 from state import *
-from vector_store import *
-from node_shared import *
+from stores.vector_store import *
+from .shared import *
 
-from node_context import _update_story_bible
+from .context import _update_story_bible
 
 def _find_canon_card(name: str, cards: list[dict[str, Any]]) -> dict[str, Any] | None:
     """按姓名/别名找全局角色卡，用于把说话风格等字段合并进故事角色。"""

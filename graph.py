@@ -20,9 +20,9 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from config import INTENT_HIGH_CONFIDENCE, INTENT_LOW_CONFIDENCE
-from image_gen import image_gen_node
-from node_shot_generate import shot_generate_node
-from node_video_prompt import build_video_prompt_node
+from services.image_gen import image_gen_node
+from nodes.shot_generate import shot_generate_node
+from nodes.video_prompt import build_video_prompt_node
 from nodes import (
     branch_validate_node,
     confirm_node,
@@ -40,7 +40,7 @@ from nodes import (
     validate_node,
 )
 from state import ComicState
-from video_gen import video_graph_node
+from services.video_gen import video_graph_node
 
 
 def route_after_intent(

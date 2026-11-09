@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 import config
-from global_profile import load_global_profile
-from node_shared import NodeError, _print_stage, _print_output, invoke_structured
-from prompts_shots import SHOT_OOC_SYSTEM, build_shot_ooc_prompt
+from stores.global_profile import load_global_profile
+from .shared import NodeError, _print_stage, _print_output, invoke_structured
+from prompts.shots import SHOT_OOC_SYSTEM, build_shot_ooc_prompt
 from state import BranchValidationResult, ComicState
 
 

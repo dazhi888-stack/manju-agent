@@ -12,11 +12,11 @@ from pydantic import BaseModel
 import config
 from config import *
 from prompts import *
-from render import *
+from services.render import *
 from state import *
-from vector_store import *
-from node_shared import *
-from global_profile import ensure_global_profile, global_profile_cards
+from stores.vector_store import *
+from .shared import *
+from stores.global_profile import ensure_global_profile, global_profile_cards
 
 def parse_node(state: ComicState) -> dict[str, Any]:
     """

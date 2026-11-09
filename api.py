@@ -24,7 +24,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 import config
-from character_reference import (
+from services.character_reference import (
     character_prompts,
     get_character_references,
     profile_from_card,
@@ -33,21 +33,21 @@ from character_reference import (
     save_reference_image,
 )
 from graph import graph
-from global_profile import global_profile_cards, load_global_profile, profile_path
-from image_gen import ImageApiError, external_image_api, image_gen_node
-from node_video_prompt import build_video_prompt_node
-from output_writer import save_state_markdown
-from shot_prompt import (
+from stores.global_profile import global_profile_cards, load_global_profile, profile_path
+from services.image_gen import ImageApiError, external_image_api, image_gen_node
+from nodes.video_prompt import build_video_prompt_node
+from services.output_writer import save_state_markdown
+from services.shot_prompt import (
     generate_shot_prompt,
     load_episode_context,
     parse_storyboard_shots,
     select_key_shot,
 )
-from shot_store import load_episode_shots, render_storyboard_markdown
+from stores.shot_store import load_episode_shots, render_storyboard_markdown
 from state import ComicState
-from video_prompt import storyboard_shots
-from video_gen import video_circuit_breaker, video_graph_node
-from vector_store import get_story_memory
+from services.video_prompt import storyboard_shots
+from services.video_gen import video_circuit_breaker, video_graph_node
+from stores.vector_store import get_story_memory
 
 
 app = FastAPI(

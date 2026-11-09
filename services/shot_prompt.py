@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Any
 
 import config
-from output_importer import parse_output_markdown
-from shot_store import load_episode_shots, render_storyboard_markdown
+from services.output_importer import parse_output_markdown
+from stores.shot_store import load_episode_shots, render_storyboard_markdown
 from prompts import SHOT_PROMPT_SYSTEM, build_shot_prompt_prompt
 from state import ShotPromptDraft
-from vector_store import (
+from stores.vector_store import (
     format_character_cards,
     get_character_library,
     get_story_memory,

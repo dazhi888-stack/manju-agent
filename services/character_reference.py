@@ -21,7 +21,7 @@ from PIL import Image
 
 import config
 from state import CharacterBaseProfile, GlobalCharacter
-from vector_store import get_character_library
+from stores.vector_store import get_character_library
 
 COLLECTION_NAME = "character_references"
 EMBED_DIM = 512

@@ -18,10 +18,10 @@ from pathlib import Path
 from typing import Any
 
 import config
-from character_reference import image_similarity, reference_block, reference_images
+from services.character_reference import image_similarity, reference_block, reference_images
 from prompts import IMAGE_PROMPT_SYSTEM, build_image_prompt_prompt
 from state import ComicState, ImagePromptDraft
-from vector_store import get_story_memory
+from stores.vector_store import get_story_memory
 
 try:
     from langsmith import traceable

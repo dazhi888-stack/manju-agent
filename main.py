@@ -283,7 +283,7 @@ def print_banner(args: argparse.Namespace, config) -> None:
 
 def prepare_library(args: argparse.Namespace, config) -> None:
     """处理 --reset-db / --seed-only / 首次自动注入。"""
-    from vector_store import get_character_library
+    from stores.vector_store import get_character_library
 
     library = get_character_library()
 
@@ -390,7 +390,7 @@ def run_demo(args: argparse.Namespace) -> int:
     config.set_model_override(args.model or None)
 
     # 在导入 graph 之前补齐 LangChain/LangGraph 能识别的 LangSmith 环境变量。
-    from tracing import configure_langsmith
+    from services.tracing import configure_langsmith
 
     configure_langsmith()
 
@@ -411,7 +411,7 @@ def run_demo(args: argparse.Namespace) -> int:
     # 从已有 outputs/*.md 恢复 story_memory，不调用 LLM。
     if args.sync_outputs or args.import_output:
         prepare_library(args, config)
-        from output_importer import import_outputs
+        from services.output_importer import import_outputs
 
         if args.sync_outputs:
             # 注意：--sync-outputs 时 --story-id 只做过滤，不把别的故事改写成当前故事。
@@ -433,13 +433,13 @@ def run_demo(args: argparse.Namespace) -> int:
         return 0
 
     if args.check_langsmith:
-        from tracing import check_langsmith
+        from services.tracing import check_langsmith
 
         return 0 if check_langsmith() else 2
 
     if args.cleanup_outputs:
         prepare_library(args, config)
-        from output_importer import cleanup_outputs
+        from services.output_importer import cleanup_outputs
 
         cleanup_outputs(config.OUTPUT_DIR)
         return 0
@@ -457,7 +457,7 @@ def run_demo(args: argparse.Namespace) -> int:
     from graph import graph
     from langgraph.types import Command
     from nodes import NodeError
-    from render import render_final
+    from services.render import render_final
 
     max_revisions = (
         args.max_revisions

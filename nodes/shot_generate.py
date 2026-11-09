@@ -9,10 +9,10 @@ import time
 from typing import Any
 
 import config
-from global_profile import load_global_profile
-from node_shared import NodeError, _print_header, _print_output, invoke_structured
-from prompts_shots import SHOT_GENERATE_SYSTEM, build_shot_generate_prompt
-from shot_store import (
+from stores.global_profile import load_global_profile
+from .shared import NodeError, _print_header, _print_output, invoke_structured
+from prompts.shots import SHOT_GENERATE_SYSTEM, build_shot_generate_prompt
+from stores.shot_store import (
     load_episode_shots,
     normalize_shots,
     render_storyboard_markdown,
@@ -25,7 +25,7 @@ def _episode_no(state: ComicState) -> int:
     episode_no = int(state.get("episode_no") or 0)
     if episode_no > 0:
         return episode_no
-    from vector_store import get_story_memory
+    from stores.vector_store import get_story_memory
 
     story_id = str(state.get("story_id") or "default")
     return get_story_memory().get_latest_episode_no(story_id) + 1

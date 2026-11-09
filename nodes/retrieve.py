@@ -12,13 +12,13 @@ from pydantic import BaseModel
 import config
 from config import *
 from prompts import *
-from render import *
+from services.render import *
 from state import *
-from vector_store import *
-from node_shared import *
+from stores.vector_store import *
+from .shared import *
 
-from node_context import _fallback_compressed_context
-from global_profile import global_profile_cards, load_global_profile
+from .context import _fallback_compressed_context
+from stores.global_profile import global_profile_cards, load_global_profile
 
 def _preferred_roles(story_id: str, memory: Any) -> list[dict[str, Any]]:
     """人设优先读本地全局 JSON；旧故事才回退 Chroma 角色卡。"""

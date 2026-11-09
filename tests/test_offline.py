@@ -21,7 +21,7 @@ if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
 from config import DEMO_CHARACTERS_PATH
-from output_importer import parse_output_markdown
+from services.output_importer import parse_output_markdown
 from graph import (
     route_after_branch_validation,
     route_after_confirm,
@@ -31,7 +31,7 @@ from graph import (
     route_after_storyboard_retrieval,
     route_after_validation,
 )
-from render import (
+from services.render import (
     escape_table_cell,
     normalize_duration,
     render_episode_summary,
@@ -50,7 +50,7 @@ from state import (
     Shot,
     StoryboardDraft,
 )
-from vector_store import CharacterLibrary, LocalHashEmbedding, StoryMemoryStore
+from stores.vector_store import CharacterLibrary, LocalHashEmbedding, StoryMemoryStore
 
 
 class TestEmbedding(unittest.TestCase):
@@ -491,8 +491,8 @@ class TestContextCompressNode(unittest.TestCase):
             key_facts=["铜符仍缺一半"],
             open_threads=["周砚为何不杀林昭"],
         )
-        with patch("node_context.get_story_memory", return_value=FakeMemory()), patch(
-            "node_context.invoke_structured", return_value=result
+        with patch("nodes.context.get_story_memory", return_value=FakeMemory()), patch(
+            "nodes.context.invoke_structured", return_value=result
         ):
             update = nodes.context_compress_node(
                 {"raw_text": "续写第三夜", "story_id": "s1"}
@@ -512,8 +512,8 @@ class TestIntentFallback(unittest.TestCase):
     def test_llm_failure_becomes_unknown(self) -> None:
         import nodes
 
-        with patch("node_intent.get_story_memory", return_value=self._FakeMemory()), patch(
-            "node_intent.invoke_structured",
+        with patch("nodes.intent.get_story_memory", return_value=self._FakeMemory()), patch(
+            "nodes.intent.invoke_structured",
             side_effect=nodes.NodeError("意图识别", "fake failure"),
         ):
             result = nodes.intent_node({"raw_text": "随便看看"})
@@ -606,7 +606,7 @@ class TestBranchValidationNode(unittest.TestCase):
             ],
             summary="只有轻微问题",
         )
-        with patch("node_branch.invoke_structured", return_value=result):
+        with patch("nodes.branch.invoke_structured", return_value=result):
             update = nodes.branch_validate_node(self._state())
         self.assertTrue(update["branch_validation"]["passed"])
         self.assertEqual(update["branch_feedback"], "")
@@ -627,7 +627,7 @@ class TestBranchValidationNode(unittest.TestCase):
             ],
             summary="严重吃设定",
         )
-        with patch("node_branch.invoke_structured", return_value=result):
+        with patch("nodes.branch.invoke_structured", return_value=result):
             update = nodes.branch_validate_node(self._state(revision=0))
         self.assertFalse(update["branch_validation"]["passed"])
         self.assertIn("提前合拢铜符", update["branch_feedback"])
@@ -649,7 +649,7 @@ class TestBranchValidationNode(unittest.TestCase):
             ],
             summary="未通过",
         )
-        with patch("node_branch.invoke_structured", return_value=result):
+        with patch("nodes.branch.invoke_structured", return_value=result):
             update = nodes.branch_validate_node(self._state(revision=2))
         self.assertFalse(update["branch_validation"]["passed"])
         self.assertIn("error_message", update)
@@ -695,7 +695,7 @@ class TestIntentHelpers(unittest.TestCase):
             "canon_profiles": [{"name": "林昭", "personality": "寡言"}],
             "script": "上一版剧本",
         }
-        with patch("node_continue.invoke_structured", side_effect=fake_invoke):
+        with patch("nodes.continue_script.invoke_structured", side_effect=fake_invoke):
             update = nodes.continue_script_node(state)
 
         self.assertIn("提前合拢铜符", captured["user_prompt"])
@@ -788,7 +788,7 @@ class TestIntentHelpers(unittest.TestCase):
 
 class TestScriptCleaner(unittest.TestCase):
     def test_duplicate_speaker_names_are_collapsed(self) -> None:
-        from script_cleaner import clean_script_text
+        from services.script_cleaner import clean_script_text
 
         text = (
             "# 漫剧剧本\n"
@@ -807,7 +807,7 @@ class TestScriptCleaner(unittest.TestCase):
         self.assertIn("【旁白】林昭 林昭。", cleaned)
 
     def test_valid_speaker_is_not_changed(self) -> None:
-        from script_cleaner import clean_script_text
+        from services.script_cleaner import clean_script_text
 
         cleaned, changed = clean_script_text("【台词】苏晚：林昭，你来了。")
         self.assertEqual(changed, 0)
@@ -816,7 +816,7 @@ class TestScriptCleaner(unittest.TestCase):
 
 class TestShotPrompt(unittest.TestCase):
     def test_parse_storyboard_shots(self) -> None:
-        from shot_prompt import parse_storyboard_shots
+        from services.shot_prompt import parse_storyboard_shots
 
         board = (
             "| 镜头序号 | 时长 | 画面描述 | 台词/旁白 | 镜头运镜 | 氛围备注 |\n"
@@ -829,7 +829,7 @@ class TestShotPrompt(unittest.TestCase):
         self.assertIn("林昭擦剑", shots[1]["visual"])
 
     def test_render_and_clean_prompt(self) -> None:
-        from shot_prompt import (
+        from services.shot_prompt import (
             _clean_positive_prompt,
             render_shot_prompt,
         )
@@ -847,7 +847,7 @@ class TestShotPrompt(unittest.TestCase):
 class TestImageVideoNodes(unittest.TestCase):
     def test_image_node_prompt_and_save(self) -> None:
         import config
-        import image_gen
+        from services import image_gen
         from state import ImagePromptDraft
 
         async def fake_api(positive, negative, style):
@@ -871,7 +871,7 @@ class TestImageVideoNodes(unittest.TestCase):
         config.IMAGE_PROMPT_USE_LLM = True
         try:
             with patch("nodes.invoke_structured", return_value=draft), patch(
-                "image_gen.external_image_api", side_effect=fake_api
+                "services.image_gen.external_image_api", side_effect=fake_api
             ):
                 update = asyncio.run(image_gen.image_gen_node(
                     {
@@ -901,7 +901,7 @@ class TestImageVideoNodes(unittest.TestCase):
 
     def test_image_node_prompt_only_without_api(self) -> None:
         import config
-        import image_gen
+        from services import image_gen
         from state import ImagePromptDraft
 
         draft = ImagePromptDraft(
@@ -931,7 +931,7 @@ class TestImageVideoNodes(unittest.TestCase):
     def test_video_node_is_reserved(self) -> None:
         import config
         from pathlib import Path
-        from video_gen import video_circuit_breaker, video_gen_node
+        from services.video_gen import video_circuit_breaker, video_gen_node
 
         tmp = Path("outputs/_test_video_node")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -967,7 +967,7 @@ class TestImageVideoNodes(unittest.TestCase):
 
 class TestVideoCircuitBreaker(unittest.TestCase):
     def test_three_failures_open_half_open_and_recover(self) -> None:
-        from video_gen import CircuitBreaker, CircuitState
+        from services.video_gen import CircuitBreaker, CircuitState
 
         breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=40)
         for _ in range(3):
@@ -986,7 +986,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
         self.assertEqual(breaker.failure_count, 0)
 
     def test_half_open_failure_reopens(self) -> None:
-        from video_gen import CircuitBreaker, CircuitState
+        from services.video_gen import CircuitBreaker, CircuitState
 
         breaker = CircuitBreaker(failure_threshold=3, recovery_timeout=40)
         for _ in range(3):
@@ -999,7 +999,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
     def test_api_failure_degrades_and_counts(self) -> None:
         import config
         from pathlib import Path
-        from video_gen import video_circuit_breaker, video_gen_node
+        from services.video_gen import video_circuit_breaker, video_gen_node
 
         tmp = Path("outputs/_test_video_fail")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1008,7 +1008,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
         video_circuit_breaker.reset()
         try:
             with patch(
-                "video_gen.call_seedance_async",
+                "services.video_gen.call_seedance_async",
                 side_effect=RuntimeError("quota exceeded"),
             ):
                 update = asyncio.run(
@@ -1034,7 +1034,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
     def test_circuit_open_skips_api(self) -> None:
         import config
         from pathlib import Path
-        from video_gen import video_circuit_breaker, video_gen_node
+        from services.video_gen import video_circuit_breaker, video_gen_node
 
         tmp = Path("outputs/_test_video_open")
         tmp.mkdir(parents=True, exist_ok=True)
@@ -1044,7 +1044,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
         for _ in range(3):
             video_circuit_breaker.record_failure()
         try:
-            with patch("video_gen.call_seedance_async") as api:
+            with patch("services.video_gen.call_seedance_async") as api:
                 update = asyncio.run(
                     video_gen_node(
                         {
@@ -1068,7 +1068,7 @@ class TestVideoCircuitBreaker(unittest.TestCase):
 
 class TestVideoPromptBuilder(unittest.TestCase):
     def test_prompt_uses_episode_summary_and_storyboard_only(self) -> None:
-        from video_prompt import build_episode_video_prompt
+        from services.video_prompt import build_episode_video_prompt
 
         summary = (
             "# 剧情摘要｜测试\n\n## 本集主线\n"
@@ -1088,7 +1088,7 @@ class TestVideoPromptBuilder(unittest.TestCase):
         self.assertNotIn("左眉旧疤", prompt)
 
     def test_range_validation(self) -> None:
-        from video_prompt import build_episode_video_prompt
+        from services.video_prompt import build_episode_video_prompt
 
         board = (
             "| 镜头序号 | 时长 | 画面描述 | 台词/旁白 | 镜头运镜 | 氛围备注 |\n"
@@ -1104,7 +1104,7 @@ class TestVideoPromptBuilder(unittest.TestCase):
         self.assertEqual(str(ctx.exception), "本集一共2个镜头，请重新选择区间")
 
     def test_empty_episode_raises_friendly_error(self) -> None:
-        from video_prompt import build_episode_video_prompt
+        from services.video_prompt import build_episode_video_prompt
 
         with self.assertRaises(ValueError) as ctx:
             build_episode_video_prompt("", "", "水墨")
@@ -1145,7 +1145,7 @@ class TestScriptLlmFallback(unittest.TestCase):
             calls.append(model or "free")
             return FakeLlm(model != __import__("config").SCRIPT_MODEL_PRO)
 
-        with patch("node_shared.config.get_script_llm", side_effect=fake_get_script_llm):
+        with patch("nodes.shared.config.get_script_llm", side_effect=fake_get_script_llm):
             result = nodes.invoke_structured(
                 node_name="测试剧本",
                 schema=Tiny,
@@ -1280,7 +1280,7 @@ class TestIssueMemory(unittest.TestCase):
             "branch_revision_count": 1,
             "branch_max_revisions": 2,
         }
-        with patch("node_branch.invoke_structured", side_effect=fake_invoke):
+        with patch("nodes.branch.invoke_structured", side_effect=fake_invoke):
             nodes.branch_validate_node(state)
         self.assertIn("旧问题A", captured["user_prompt"])
         self.assertIn("历史问题台账", captured["user_prompt"])
@@ -1291,7 +1291,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
         import config
         import shutil
         from pathlib import Path
-        from global_profile import ensure_global_profile, profile_path
+        from stores.global_profile import ensure_global_profile, profile_path
         from state import GlobalCharacter, GlobalProfileDraft
 
         tmp = Path("data/_test_global_profile")
@@ -1309,7 +1309,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
             ],
         )
         try:
-            with patch("global_profile.invoke_structured", return_value=draft) as llm:
+            with patch("stores.global_profile.invoke_structured", return_value=draft) as llm:
                 first, path, cached = ensure_global_profile("s1", "原文", "测试")
                 self.assertFalse(cached)
                 self.assertTrue(path.exists())
@@ -1326,7 +1326,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
         import config
         import shutil
         from pathlib import Path
-        from node_shot_generate import shot_generate_node
+        from nodes.shot_generate import shot_generate_node
         from state import EpisodeShot, EpisodeShotsDraft
 
         tmp = Path("outputs/_test_shot_generate")
@@ -1363,7 +1363,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
             },
         }
         try:
-            with patch("node_shot_generate.invoke_structured", return_value=draft) as llm:
+            with patch("nodes.shot_generate.invoke_structured", return_value=draft) as llm:
                 first = shot_generate_node(state)
                 self.assertTrue(first["shot_file"].endswith("ep_01.json"))
                 self.assertEqual(len(first["shots"]), 2)
@@ -1377,7 +1377,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_global_profile_filters_temporary_state(self) -> None:
-        from global_profile import sanitize_profile
+        from stores.global_profile import sanitize_profile
 
         profile = sanitize_profile(
             {
@@ -1401,8 +1401,8 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
         import config
         import shutil
         from pathlib import Path
-        from node_video_prompt import build_video_prompt_node
-        from shot_store import render_storyboard_markdown
+        from nodes.video_prompt import build_video_prompt_node
+        from stores.shot_store import render_storyboard_markdown
 
         tmp = Path("outputs/_test_video_prompt_node")
         old_output = config.OUTPUT_DIR
@@ -1448,7 +1448,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
             "global_profile": {"characters": [{"name": "林昭"}]},
             "shots": [{"shot_no": 1, "visual": "林昭擦剑"}],
         }
-        with patch("node_shot_validate.invoke_structured", return_value=result):
+        with patch("nodes.shot_validate.invoke_structured", return_value=result):
             update = nodes.branch_validate_node(state)
         self.assertTrue(update["branch_validation"]["passed"])
         self.assertEqual(

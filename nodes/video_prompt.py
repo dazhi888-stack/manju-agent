@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import Any
 
 import config
-from character_reference import reference_block as character_reference_block
-from global_profile import load_global_profile
-from shot_prompt import parse_storyboard_shots
-from shot_store import render_storyboard_markdown
+from services.character_reference import reference_block as character_reference_block
+from stores.global_profile import load_global_profile
+from services.shot_prompt import parse_storyboard_shots
+from stores.shot_store import render_storyboard_markdown
 from state import ComicState
-from video_prompt import build_episode_video_prompt
+from services.video_prompt import build_episode_video_prompt
 
 
 def build_video_prompt_node(state: ComicState) -> dict[str, Any]:

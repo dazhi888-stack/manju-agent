@@ -12,10 +12,10 @@ from pydantic import BaseModel
 import config
 from config import *
 from prompts import *
-from render import *
+from services.render import *
 from state import *
-from vector_store import *
-from node_shared import *
+from stores.vector_store import *
+from .shared import *
 
 def _format_summaries_for_compress(summaries: list[dict[str, Any]]) -> str:
     """把最近摘要拼成压缩提示词输入，最多 3 条。"""

@@ -11,12 +11,12 @@ from pathlib import Path
 from typing import Any
 
 import config
-from global_profile import profile_path, sanitize_profile
-from json_store import write_json
-from output_importer import parse_output_markdown
-from shot_prompt import parse_storyboard_shots
-from shot_store import load_episode_shots, save_episode_shots
-from vector_store import get_story_memory
+from stores.global_profile import profile_path, sanitize_profile
+from stores.json_store import write_json
+from services.output_importer import parse_output_markdown
+from services.shot_prompt import parse_storyboard_shots
+from stores.shot_store import load_episode_shots, save_episode_shots
+from stores.vector_store import get_story_memory
 
 
 def _from_output_files(story_id: str, episode_no: int) -> dict[str, Any] | None:

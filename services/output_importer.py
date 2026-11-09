@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from config import OUTPUT_DIR, PROJECT_DIR, configure_console
-from vector_store import get_character_library, get_story_memory
+from stores.vector_store import get_character_library, get_story_memory
 
 
 def _section(text: str, heading_prefix: str) -> str:

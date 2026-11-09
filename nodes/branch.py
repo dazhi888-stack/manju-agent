@@ -12,11 +12,11 @@ from pydantic import BaseModel
 import config
 from config import *
 from prompts import *
-from render import *
+from services.render import *
 from state import *
-from vector_store import *
-from node_shared import *
-from node_shot_validate import validate_shot_ooc
+from stores.vector_store import *
+from .shared import *
+from .shot_validate import validate_shot_ooc
 
 def _format_history_summaries(summaries: list[dict[str, Any]]) -> str:
     """把历史摘要文档拼成校验提示词需要的文本。"""

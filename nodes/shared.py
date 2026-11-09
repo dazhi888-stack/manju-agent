@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel
 
 import config
-from script_cleaner import clean_script_text
+from services.script_cleaner import clean_script_text
 
 T = TypeVar("T", bound=BaseModel)
 SEPARATOR = "=" * 72

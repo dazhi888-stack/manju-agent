@@ -522,39 +522,56 @@ manju_agent/
 ├─ main.py                  # CLI + FastAPI app 入口
 ├─ api.py                   # FastAPI 路由
 ├─ web_app.py               # Streamlit 页面
-├─ graph.py                 # LangGraph 状态机
+├─ menu.py                  # 交互菜单
+├─ graph.py                 # LangGraph 状态机（图编排）
 ├─ state.py                 # State + Pydantic Schema
 ├─ config.py                # 环境变量与路径
+├─ backfill_shots.py        # 旧分镜回填脚本
 │
-├─ node_parse.py            # 原文解析 + 冷启动全局档案
-├─ node_script.py           # 剧本改写
-├─ node_continue.py         # 续写剧本
-├─ node_modify.py           # 局部修改
-├─ node_shot_generate.py    # 结构化分镜 + 缓存
-├─ node_shot_validate.py    # 分镜 OOC 校验
-├─ node_video_prompt.py     # 视频提示词切片
-├─ node_branch.py           # 校验路由 / 台账
-├─ node_persist.py          # 持久化
-├─ node_retrieve.py         # 记忆检索
-├─ node_context.py          # 上下文压缩 / 故事圣经
-├─ node_intent.py           # 意图识别 / 确认
-├─ node_shared.py           # LLM 调用 / 日志 / 结构化重试
-├─ node_storyboard.py       # 旧分镜节点（兼容）
-├─ node_validate.py         # 旧校验节点（兼容）
+├─ nodes/                   # LangGraph 节点（按职责拆分）
+│  ├─ __init__.py           #   门面：from nodes import intent_node
+│  ├─ intent.py             #   意图识别 / 确认 / 错误
+│  ├─ context.py            #   上下文压缩 / 故事圣经
+│  ├─ retrieve.py           #   记忆检索
+│  ├─ parse.py              #   原文解析 + 冷启动全局档案
+│  ├─ script.py             #   剧本改写
+│  ├─ continue_script.py    #   续写剧本
+│  ├─ modify.py             #   局部修改
+│  ├─ shot_generate.py      #   结构化分镜 + 缓存
+│  ├─ shot_validate.py      #   分镜 OOC 校验
+│  ├─ branch.py             #   校验路由 / 台账
+│  ├─ persist.py            #   持久化
+│  ├─ video_prompt.py       #   视频提示词节点
+│  ├─ storyboard.py         #   旧分镜节点（兼容）
+│  ├─ validate.py           #   旧校验节点（兼容）
+│  └─ shared.py             #   LLM 调用 / 日志 / 结构化重试
 │
-├─ global_profile.py        # 全局角色 JSON
-├─ character_reference.py   # 角色基准图 / 参考库
-├─ shot_store.py            # ep_XX.json
-├─ json_store.py            # JSON + Markdown 清洗
-├─ video_prompt.py          # 纯 Python 视频提示词
-├─ image_gen.py             # Z-Image 生图
-├─ video_gen.py             # Seedance + 熔断降级
-├─ vector_store.py          # Chroma
-├─ output_importer.py       # outputs 导入
-├─ output_writer.py         # Web 输出落盘
-├─ backfill_shots.py        # 旧分镜回填
-├─ prompts.py / prompts_global.py / prompts_shots.py
-└─ tests/test_offline.py
+├─ services/                # 模型调用与 I/O 服务
+│  ├─ image_gen.py          #   Z-Image 生图
+│  ├─ video_gen.py          #   Seedance + 熔断降级
+│  ├─ character_reference.py#   角色基准图 / 参考库
+│  ├─ video_prompt.py       #   纯 Python 视频提示词切片
+│  ├─ script_cleaner.py     #   剧本清洗
+│  ├─ render.py             #   渲染
+│  ├─ output_importer.py    #   outputs 导入
+│  ├─ output_writer.py      #   Web 输出落盘
+│  └─ tracing.py            #   LangSmith 追踪
+│
+├─ stores/                  # 存储层
+│  ├─ vector_store.py       #   Chroma（故事记忆 / 角色库）
+│  ├─ shot_store.py         #   ep_XX.json 分镜缓存
+│  ├─ json_store.py         #   JSON + Markdown 清洗
+│  └─ global_profile.py     #   全局角色 JSON
+│
+├─ prompts/                 # 提示词集中管理
+│  ├─ __init__.py           #   from prompts import X（兼容 re-export）
+│  ├─ core.py               #   意图 / 续写 / 修改节点提示词
+│  ├─ profile.py            #   全局角色 / 世界观抽取
+│  └─ shots.py              #   分镜生成 / OOC 校验
+│
+├─ data/                    # 演示数据与故事档案
+├─ tests/test_offline.py    # 离线测试 66 项
+└─ .env.example             # 环境变量模板
 ```
 
 ---

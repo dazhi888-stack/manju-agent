@@ -96,7 +96,7 @@ def _run(args: argparse.Namespace) -> int:
 
 def _show_stories() -> None:
     try:
-        from vector_store import get_story_memory
+        from stores.vector_store import get_story_memory
 
         story_ids = get_story_memory().list_story_ids()
     except Exception as exc:
@@ -159,7 +159,7 @@ def _image_from_text() -> int:
         return 1
     style = _choose_style()
     negative = _ask("额外负面词（可留空）")
-    from image_gen import generate_image_from_text
+    from services.image_gen import generate_image_from_text
 
     result = asyncio.run(
         generate_image_from_text(
@@ -185,7 +185,7 @@ def _video_from_text() -> int:
     if confirm not in {"y", "yes", "是", "确认"}:
         print("[菜单] 已取消视频生成，回到主菜单。")
         return 0
-    from video_gen import video_gen_node
+    from services.video_gen import video_gen_node
 
     result = asyncio.run(
         video_gen_node(
@@ -209,7 +209,7 @@ def _video_from_text() -> int:
 def _shot_prompt() -> int:
     episode_text = _ask("第几集（留空=最新）")
     episode_no = int(episode_text) if episode_text.isdigit() else None
-    from shot_prompt import (
+    from services.shot_prompt import (
         generate_shot_prompt,
         load_episode_context,
         parse_storyboard_shots,
