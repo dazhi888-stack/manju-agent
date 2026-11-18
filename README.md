@@ -355,14 +355,32 @@ outputs/<story_id>/第N集_video_prompt.txt
 
 ### 10.1 环境
 
-```powershell
-cd C:\Users\Administrator\PycharmProjects\JupyterProject\manju_agent
-C:\Users\Administrator\miniconda3\envs\langchain1.2\python.exe -m pip install -r requirements.txt
+需要 Python 3.10+。
+
+**方式一（推荐）：Windows 双击 `run.bat`** —— 自动创建虚拟环境、安装依赖并启动前后端。
+
+**方式二：命令行手动安装**
+
+```bash
+git clone https://github.com/dazhi888-stack/manju-agent.git
+cd manju-agent
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS / Linux
+source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
 
 ### 10.2 环境变量
 
-在项目根目录 `.env` 配置（不要提交到 Git）：
+复制 `.env.example` 为 `.env`，填入你自己的 API Key（不要提交到 Git）：
+
+```bash
+copy .env.example .env    # Windows
+cp .env.example .env      # macOS / Linux
+```
 
 ```dotenv
 # 文本模型
@@ -389,28 +407,31 @@ LANGSMITH_API_KEY=lsv2_xxx
 LANGSMITH_PROJECT=manju-agent
 ```
 
-### 10.3 Web 启动
+### 10.3 一键启动（前端 + 后端）
 
-终端 1：
-
-```powershell
-cd C:\Users\Administrator\PycharmProjects\JupyterProject\manju_agent
-C:\Users\Administrator\miniconda3\envs\langchain1.2\python.exe -m uvicorn main:app --reload --port 8000
+```bash
+python start.py
 ```
 
-终端 2：
+脚本会自动检查 Python 版本、依赖和 .env 配置，缺什么提示什么，然后同时拉起前后端并打开浏览器。
 
-```powershell
-cd C:\Users\Administrator\PycharmProjects\JupyterProject\manju_agent
-C:\Users\Administrator\miniconda3\envs\langchain1.2\python.exe -m streamlit run web_app.py --server.port 8501
-```
+Windows 用户也可以直接双击 `run.bat`（首次运行自动完成环境安装）。
 
-打开：
+启动后：
 
 ```text
-前端：http://127.0.0.1:8501/
-后端：http://127.0.0.1:8000/
+前端界面：http://127.0.0.1:8501/
+后端地址：http://127.0.0.1:8000/
 接口文档：http://127.0.0.1:8000/docs
+```
+
+也可以分开启动（传统方式，便于调试）：
+
+```bash
+# 终端 1：后端
+python -m uvicorn main:app --port 8000
+# 终端 2：前端
+python -m streamlit run web_app.py --server.port 8501
 ```
 
 ### 10.4 CLI

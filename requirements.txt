@@ -18,3 +18,4 @@ streamlit>=1.40.0
 chromadb==1.5.9
 python-dotenv==1.2.1
 pydantic==2.14.1
+requests>=2.31.0
