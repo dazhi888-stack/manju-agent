@@ -136,6 +136,9 @@ async def external_image_api(
         "negative_prompt": negative_prompt,
         "image_size": image_size or config.IMAGE_SIZE,
         "batch_size": 1,
+        # 硅基流动支持该参数：False = 关闭右下角"AI 生成"水印。
+        # 接口如果不认识这个字段会自动忽略，不影响兼容性。
+        "watermark": False,
     }
     headers = {"Authorization": f"Bearer {config.IMAGE_API_KEY}"}
     raw, content_type = await asyncio.to_thread(
@@ -170,8 +173,16 @@ def _save_image(
     style_desc: str,
     content: bytes,
     shot_no: int = 0,
+    pending: bool = False,
 ) -> Path:
-    directory = config.OUTPUT_DIR / _safe(story_id, "default") / "images"
+    """
+    保存生成的图片。
+
+    pending=True 时存入 images/_pending 待定区（不会被分镜卡片收录），
+    用户在界面点"采用"后才移动到正式目录；False = 流水线正式产物直接入库。
+    """
+    sub_dir = "images/_pending" if pending else "images"
+    directory = config.OUTPUT_DIR / _safe(story_id, "default") / sub_dir
     directory.mkdir(parents=True, exist_ok=True)
     shot_tag = f"_镜头{shot_no}" if shot_no else ""
     path = directory / f"第{episode_no}章{shot_tag}_{_safe(style_desc, 'style')}.png"
@@ -209,6 +220,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     # 指定镜头号时，把整集分镜裁剪成该镜头单行，做到"一镜一图"。
     # 未指定时保持旧行为：整集文本自动选关键画面。
     shot_no = int(state.get("shot_no") or 0)
+    pending = bool(state.get("image_pending"))
     if shot_no:
         shots = parse_storyboard_shots(storyboard)
         matched = next((s for s in shots if s["shot_no"] == shot_no), None)
@@ -283,7 +295,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         for attempt in range(1, attempts + 1):
             try:
                 content = await external_image_api(positive, negative, style)
-                path = _save_image(story_id, episode_no, style, content, shot_no)
+                path = _save_image(story_id, episode_no, style, content, shot_no, pending)
                 image_path = str(path)
                 status = "done"
                 image_error = ""
@@ -347,6 +359,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     return {
         "style_desc": style,
         "shot_no": shot_no,
+        "image_pending": pending,
         "image_prompt_positive": positive,
         "image_prompt_negative": negative,
         "image_path": image_path,

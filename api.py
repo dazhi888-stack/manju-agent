@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import shutil
 import time
 import uuid
 from pathlib import Path
@@ -597,10 +598,62 @@ async def storyboard_image(req: ImageRequest) -> dict[str, Any]:
             "shot_no": int(req.shot_no or 0),
             "image_negative_extra": req.negative_extra,
             "canon_profiles": context["characters"],
+            # 独立生成的图先进待定区，用户确认后才进分镜卡片
+            "image_pending": True,
         }
         result = await image_gen_node(state)
         result["image_url"] = _media_url(result.get("image_path", ""))
+        image_path = result.get("image_path") or ""
+        if image_path:
+            result["image_name"] = Path(image_path).name
         return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+class AssetActionRequest(BaseModel):
+    story_id: str = "demo_story"
+    file_name: str = ""
+
+
+def _pending_image_path(story_id: str, file_name: str) -> Path:
+    """校验并返回待定区图片的完整路径，防路径穿越。"""
+    pending_dir = (config.OUTPUT_DIR / story_id / "images" / "_pending").resolve()
+    target = (pending_dir / Path(file_name).name).resolve()
+    if target.parent != pending_dir or not target.exists():
+        raise HTTPException(status_code=404, detail=f"待定区找不到图片：{file_name}")
+    return target
+
+
+@app.post("/api/storyboard/image/confirm")
+async def confirm_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
+    """用户确认满意：把图从待定区移动到正式 images 目录，分镜卡片即可看到。"""
+    try:
+        source = _pending_image_path(req.story_id, req.file_name)
+        target_dir = (config.OUTPUT_DIR / req.story_id / "images").resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / source.name
+        shutil.move(str(source), str(target))
+        return {
+            "image_name": target.name,
+            "image_path": str(target),
+            "image_url": _media_url(str(target)),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/api/storyboard/image/discard")
+async def discard_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
+    """用户不满意：直接删除待定区图片。"""
+    try:
+        source = _pending_image_path(req.story_id, req.file_name)
+        source.delete()
+        return {"discarded": req.file_name}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 

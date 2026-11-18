@@ -589,7 +589,43 @@ with tab_image:
         shot_tag = image_result.get("shot_no")
         label = f"Z-Image 分镜图（镜头 #{shot_tag}）" if shot_tag else "Z-Image 分镜图（整集）"
         _show_image(image_result["image_url"], label)
-        st.caption(f"状态：{image_result.get('image_status')}")
+        st.caption(f"状态：{image_result.get('image_status')}｜未采用的图不会进入分镜卡片")
+
+        # 确认制：满意才"采用"进分镜卡片，不满意"丢弃"重生成
+        if image_result.get("image_name"):
+            keep_cols = st.columns(2)
+            if keep_cols[0].button(
+                "✅ 采用此图（存入分镜卡片）", type="primary", use_container_width=True
+            ):
+                confirmed = _api(
+                    "POST",
+                    "/api/storyboard/image/confirm",
+                    {
+                        "story_id": story_id,
+                        "file_name": image_result["image_name"],
+                    },
+                )
+                if confirmed.get("error"):
+                    st.warning(f"采用失败：{confirmed.get('detail')}")
+                else:
+                    st.success("已存入分镜卡片，可在「故事」页查看。")
+                    st.session_state.image_result = {}
+                    st.rerun()
+            if keep_cols[1].button("🗑️ 丢弃此图", use_container_width=True):
+                discarded = _api(
+                    "POST",
+                    "/api/storyboard/image/discard",
+                    {
+                        "story_id": story_id,
+                        "file_name": image_result["image_name"],
+                    },
+                )
+                if discarded.get("error"):
+                    st.warning(f"丢弃失败：{discarded.get('detail')}")
+                else:
+                    st.session_state.image_result = {}
+                    st.rerun()
+
         with st.expander("查看/复制绘图提示词", expanded=True):
             st.code(image_result.get("image_prompt_positive") or "", language="text")
             st.code(image_result.get("image_prompt_negative") or "", language="text")

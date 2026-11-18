@@ -104,6 +104,7 @@ class ComicState(TypedDict, total=False):
     # ---- 文生图 / 文生视频 ----
     style_desc: str                # 用户指定画风，例如 日系漫画/厚涂/水墨
     shot_no: int                   # 指定镜头号；0/缺省 = 整集（自动选关键画面）
+    image_pending: bool            # 独立生成=True：图先入待定区，确认后才进分镜卡片
     image_negative_extra: str      # 用户额外负面词
     image_prompt_positive: str
     image_prompt_negative: str
