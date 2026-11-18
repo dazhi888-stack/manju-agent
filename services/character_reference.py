@@ -230,9 +230,16 @@ def get_character_references(story_id: str) -> list[dict[str, Any]]:
     return items
 
 
-def reference_block(story_id: str) -> str:
-    """生成 @Image 参考声明；没有基准图时返回空字符串。"""
+def reference_block(story_id: str, names: list[str] | None = None) -> str:
+    """生成 @Image 参考声明；没有基准图时返回空字符串。
+
+    names 给定时只包含这些角色的参考声明（按镜头出场名单过滤，
+    避免把本镜头没有的角色长相塞进 prompt 造成"串角色"）。
+    """
     refs = get_character_references(story_id)
+    if names is not None:
+        allowed = {str(n) for n in names if str(n).strip()}
+        refs = [r for r in refs if str(r.get("name") or "") in allowed]
     if not refs:
         return ""
     grouped: dict[str, list[dict[str, Any]]] = {}

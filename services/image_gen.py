@@ -19,7 +19,7 @@ from typing import Any
 
 import config
 from services.character_reference import reference_block
-from services.image_review import review_shot_image
+from services.image_review import expected_characters, review_shot_image
 from services.shot_prompt import parse_storyboard_shots
 from prompts import IMAGE_PROMPT_SYSTEM, build_image_prompt_prompt
 from state import ComicState, ImagePromptDraft
@@ -33,10 +33,9 @@ except ImportError:  # pragma: no cover - langsmith 是可选依赖
             return func
         return decorator
 
-# 固定林昭锚点：即使角色卡缺字段，也保证画风切换时不变脸。
+# 林昭是演示故事的主角：角色卡缺外貌字段时补齐这些标志性特征。
 LIN_ZHAO_FALLBACK = (
-    "林昭：青年男性，前临安府衙捕快；左眉有一道旧疤，随身无鞘短剑，"
-    "深色旧衣；脸型、发型、眉疤在所有画风中必须保持一致。"
+    "左眉有一道旧疤，随身无鞘短剑，深色旧衣"
 )
 
 
@@ -50,27 +49,46 @@ def _safe(text: str, fallback: str = "image") -> str:
     return value[:40] or fallback
 
 
-def _character_anchor(state: ComicState) -> str:
-    """从状态/角色库取林昭锚点；没有就使用固定兜底。"""
-    roles = state.get("canon_profiles") or []
-    if not roles:
-        story_id = str(state.get("story_id") or "").strip()
-        if story_id:
-            try:
-                roles = get_story_memory().get_roles(story_id)
-            except Exception:
-                roles = []
-    lin = next((r for r in roles if str(r.get("name")) == "林昭"), None)
-    if not lin:
-        return LIN_ZHAO_FALLBACK
-    appearance = str(lin.get("appearance") or "").strip()
-    role = str(lin.get("role") or "主角").strip()
-    details = [f"林昭（{role}）"]
-    if appearance and appearance != "原文未说明":
-        details.append(appearance)
-    details.append("左眉旧疤、无鞘短剑")
-    details.append("脸型/发型/眉疤固定，不因画风改变")
-    return "；".join(details)
+def _load_roles(state: ComicState) -> list[dict[str, Any]]:
+    """优先用状态里的角色卡；没有就从向量库角色记忆读取。"""
+    roles = list(state.get("canon_profiles") or [])
+    if roles:
+        return roles
+    story_id = str(state.get("story_id") or "").strip()
+    if story_id:
+        try:
+            return list(get_story_memory().get_roles(story_id))
+        except Exception:
+            return []
+    return []
+
+
+def _character_anchor(state: ComicState, shot_text: str) -> str:
+    """
+    只为本镜头实际出场的角色生成一致性锚点。
+
+    之前硬编码注入林昭外貌，导致其他故事（如韩月瑶线）每个镜头
+    都被塞进林昭的长相——审核器报"该角色不在本镜头出镜名单中"。
+    现在：出场名单来自 expected_characters（全名/去姓氏称呼匹配），
+    没有角色出场的空镜头返回空串，prompt 不含任何角色。
+    """
+    roles = _load_roles(state)
+    cast_names = expected_characters(shot_text, roles)
+    if not cast_names:
+        return ""
+    by_name = {str(r.get("name") or "").strip(): r for r in roles}
+    lines: list[str] = []
+    for name in cast_names:
+        card = by_name.get(name) or {}
+        details = [name]
+        appearance = str(card.get("appearance") or "").strip()
+        if appearance and appearance != "原文未说明":
+            details.append(appearance)
+        if name == "林昭" and "疤" not in appearance:
+            details.append(LIN_ZHAO_FALLBACK)
+        line = "，".join(part for part in details if part)
+        lines.append(f"{line}（脸型/发型/服饰固定，不因画风改变）")
+    return "；".join(lines)
 
 
 def _base_negative() -> str:
@@ -198,8 +216,9 @@ def _save_image(
 
 
 def _fallback_prompt(storyboard: str, style: str, anchor: str) -> str:
+    anchor_part = f"角色一致性：{anchor}；" if anchor else ""
     return (
-        f"{style}，漫剧关键帧，角色一致性：{anchor}；"
+        f"{style}，漫剧关键帧，{anchor_part}"
         f"场景与动作参考：{storyboard[:900]}；"
         "电影感构图，清晰五官，干净背景，高质量"
     )
@@ -220,7 +239,6 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
 
     started = time.perf_counter()
     style = str(state.get("style_desc") or config.DEFAULT_STYLE_DESC).strip()
-    anchor = _character_anchor(state)
     episode_no = int(state.get("episode_no") or 0)
     story_id = str(state.get("story_id") or "default").strip()
 
@@ -242,6 +260,9 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
             f"画面：{matched['visual']}｜台词/旁白：{matched['dialogue']}｜"
             f"氛围：{matched['mood']}"
         )
+
+    # 锚点必须用"切片后的镜头文本"算出场角色：先切片、再锚点，顺序不能反。
+    anchor = _character_anchor(state, storyboard)
 
     print("\n" + "=" * 72)
     print("【文生图】")
@@ -293,7 +314,10 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         negative = _merge_negative(user_extra)
         print("[文生图] 使用本地 prompt 模板（不调用 DeepSeek）。", flush=True)
 
-    ref_block = reference_block(story_id)
+    # 基准图声明同样只注入本镜头出场角色的（不传 names 会注入全部角色，
+    # 把没出场的角色长相塞进 prompt 造成"串角色"）。
+    cast_names = expected_characters(storyboard, _load_roles(state))
+    ref_block = reference_block(story_id, names=cast_names) if cast_names else ""
     if ref_block:
         positive = ref_block + "\n" + positive
     status = "prompt_only"

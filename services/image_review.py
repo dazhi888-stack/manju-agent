@@ -48,12 +48,17 @@ class ImageReviewResult(BaseModel):
 
 # ---------------------------------------------------------------- 人物数检查
 def expected_characters(shot_text: str, profiles: list[dict[str, Any]]) -> list[str]:
-    """从镜头描述里找出出场的角色名（按角色档案名单匹配）。"""
+    """从镜头描述里找出出场的角色名（按角色档案名单匹配）。
+
+    匹配规则：全名命中，或 3 字以上名字的"去姓氏称呼"命中（如 韩月瑶 -> 月瑶）。
+    """
     text = str(shot_text or "")
     names: list[str] = []
     for card in profiles or []:
         name = str(card.get("name") or "").strip()
-        if len(name) >= 2 and name in text:
+        if not name:
+            continue
+        if name in text or (len(name) >= 3 and name[1:] in text):
             names.append(name)
     return names
 
