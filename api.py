@@ -658,6 +658,28 @@ async def discard_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
 
+@app.post("/api/storyboard/image/delete")
+async def delete_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
+    """删除已收录或待定区的分镜图片（分镜卡片页的删除按钮用）。"""
+    try:
+        images_dir = (config.OUTPUT_DIR / req.story_id / "images").resolve()
+        pending_dir = (images_dir / "_pending").resolve()
+        # 只允许删除 images 目录（含待定区）里的文件，防路径穿越
+        candidate = (images_dir / Path(req.file_name).name).resolve()
+        if candidate.parent == images_dir and candidate.is_file():
+            candidate.delete()
+            return {"deleted": candidate.name}
+        candidate_pending = (pending_dir / Path(req.file_name).name).resolve()
+        if candidate_pending.parent == pending_dir and candidate_pending.is_file():
+            candidate_pending.delete()
+            return {"deleted": candidate_pending.name}
+        raise HTTPException(status_code=404, detail=f"找不到图片：{req.file_name}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
 @app.post("/api/prompt/shot")
 async def shot_prompt(req: PromptRequest) -> dict[str, Any]:
     try:

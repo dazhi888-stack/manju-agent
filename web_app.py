@@ -371,9 +371,31 @@ with tab_story:
     episode = st.session_state.episode or {}
     if episode:
         st.markdown(f"### 第{episode.get('episode_no')}集｜{episode.get('title') or ''}")
-        assets = episode.get("assets") or {}
-        for image in assets.get("images") or []:
-            _show_image(image.get("url", ""), image.get("name", ""))
+        assets = episode.get("assets") or []
+        image_list = (assets.get("images") if isinstance(assets, dict) else None) or []
+        if image_list:
+            st.caption(f"本集已收录 {len(image_list)} 张图（不满意的可在图下方删除）")
+            for image in image_list:
+                with st.container(border=True):
+                    _show_image(image.get("url", ""), image.get("name", ""))
+                    if st.button(
+                        "🗑️ 删除此图",
+                        key=f"del_img_{image.get('name')}",
+                        use_container_width=True,
+                    ):
+                        deleted = _api(
+                            "POST",
+                            "/api/storyboard/image/delete",
+                            {
+                                "story_id": story_id,
+                                "file_name": image.get("name", ""),
+                            },
+                        )
+                        if deleted.get("error"):
+                            st.warning(f"删除失败：{deleted.get('detail')}")
+                        else:
+                            st.toast("图片已删除")
+                            st.rerun()
         rows = _parse_storyboard_rows(episode.get("storyboard") or "")
         for index, row in enumerate(rows, start=1):
             padded = row + [""] * (6 - len(row))
@@ -610,7 +632,6 @@ with tab_image:
                 else:
                     st.success("已存入分镜卡片，可在「故事」页查看。")
                     st.session_state.image_result = {}
-                    st.rerun()
             if keep_cols[1].button("🗑️ 丢弃此图", use_container_width=True):
                 discarded = _api(
                     "POST",
@@ -624,7 +645,6 @@ with tab_image:
                     st.warning(f"丢弃失败：{discarded.get('detail')}")
                 else:
                     st.session_state.image_result = {}
-                    st.rerun()
 
         with st.expander("查看/复制绘图提示词", expanded=True):
             st.code(image_result.get("image_prompt_positive") or "", language="text")
