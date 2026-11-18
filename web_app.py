@@ -572,8 +572,9 @@ with tab_image:
             st.session_state.shot_options_episode = int(image_episode)
 
     shot_options = st.session_state.get("shot_options") or []
+    # 显示完整画面描述，不截断——选镜头靠的就是读这段文字。
     shot_labels = [
-        f"#{row[0]}｜{(row[2] if len(row) > 2 else '')[:26]}"
+        f"#{row[0]}｜{row[2] if len(row) > 2 else ''}"
         for row in shot_options
     ]
     shot_choice = st.selectbox(
