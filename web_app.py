@@ -360,7 +360,12 @@ with tab_story:
     episode_no = col_ep.number_input("第几集", min_value=1, value=1, step=1)
     if col_btn.button("加载该集分镜", use_container_width=True):
         episode = _api("GET", f"/api/story/{story_id}/episodes/{int(episode_no)}")
-        if not episode.get("error"):
+        if episode.get("error"):
+            st.session_state.episode = {}
+            st.warning(
+                f"第{int(episode_no)}集加载失败：{episode.get('detail') or '该集数据不存在，请先在这一集上跑一遍生成。'}"
+            )
+        else:
             st.session_state.episode = episode
 
     episode = st.session_state.episode or {}
@@ -517,6 +522,40 @@ with tab_image:
         value=int(st.session_state.get("episode", {}).get("episode_no") or 1),
         step=1,
     )
+    # 集数变化时让旧的镜头列表失效，避免拿错集的镜头号。
+    if st.session_state.get("shot_options_episode") != int(image_episode):
+        st.session_state.shot_options = []
+        st.session_state.shot_options_episode = int(image_episode)
+
+    if st.button("读取该集镜头列表", use_container_width=True):
+        episode_data = _api(
+            "GET", f"/api/story/{story_id}/episodes/{int(image_episode)}"
+        )
+        if episode_data.get("error"):
+            st.session_state.shot_options = []
+            st.warning(
+                f"第{int(image_episode)}集还没有分镜数据，请先在「剧本」页生成或续写。"
+            )
+        else:
+            st.session_state.shot_options = _parse_storyboard_rows(
+                episode_data.get("storyboard") or ""
+            )
+            st.session_state.shot_options_episode = int(image_episode)
+
+    shot_options = st.session_state.get("shot_options") or []
+    shot_labels = [
+        f"#{row[0]}｜{(row[2] if len(row) > 2 else '')[:26]}"
+        for row in shot_options
+    ]
+    shot_choice = st.selectbox(
+        "选择镜头（不选 = 整集自动挑关键画面）",
+        ["整集（自动选关键镜头）"] + shot_labels,
+        key="storyboard_shot_choice",
+    )
+    selected_shot_no = 0
+    if shot_choice != "整集（自动选关键镜头）":
+        selected_shot_no = int(shot_choice.split("｜")[0].lstrip("#"))
+
     image_negative = st.text_input("额外负面词（可留空）")
     image_cols = st.columns(2)
     generate_clicked = image_cols[0].button(
@@ -534,6 +573,7 @@ with tab_image:
                 {
                     "story_id": story_id,
                     "episode_no": int(image_episode),
+                    "shot_no": selected_shot_no or None,
                     "style_desc": style,
                     "negative_extra": image_negative,
                 },
@@ -541,10 +581,14 @@ with tab_image:
         if not image.get("error"):
             st.session_state.image_result = image
             st.rerun()
+        else:
+            st.warning(f"生成失败：{image.get('detail') or image.get('error')}")
 
     image_result = st.session_state.get("image_result") or {}
     if image_result.get("image_url"):
-        _show_image(image_result["image_url"], "Z-Image 分镜图")
+        shot_tag = image_result.get("shot_no")
+        label = f"Z-Image 分镜图（镜头 #{shot_tag}）" if shot_tag else "Z-Image 分镜图（整集）"
+        _show_image(image_result["image_url"], label)
         st.caption(f"状态：{image_result.get('image_status')}")
         with st.expander("查看/复制绘图提示词", expanded=True):
             st.code(image_result.get("image_prompt_positive") or "", language="text")
@@ -557,7 +601,11 @@ with tab_image:
                     + "\n\n负面：\n"
                     + str(image_result.get("image_prompt_negative") or "")
                 ),
-                file_name=f"{story_id}_第{image_episode}集_绘图提示词.txt",
+                file_name=(
+                    f"{story_id}_第{image_episode}集"
+                    + (f"_镜头{shot_tag}" if shot_tag else "")
+                    + "_绘图提示词.txt"
+                ),
                 mime="text/plain",
             )
 

@@ -19,6 +19,7 @@ from typing import Any
 
 import config
 from services.character_reference import image_similarity, reference_block, reference_images
+from services.shot_prompt import parse_storyboard_shots
 from prompts import IMAGE_PROMPT_SYSTEM, build_image_prompt_prompt
 from state import ComicState, ImagePromptDraft
 from stores.vector_store import get_story_memory
@@ -163,10 +164,17 @@ async def external_image_api(
     raise ImageApiError(f"文生图接口没有返回图片：{str(data)[:300]}")
 
 
-def _save_image(story_id: str, episode_no: int, style_desc: str, content: bytes) -> Path:
+def _save_image(
+    story_id: str,
+    episode_no: int,
+    style_desc: str,
+    content: bytes,
+    shot_no: int = 0,
+) -> Path:
     directory = config.OUTPUT_DIR / _safe(story_id, "default") / "images"
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"第{episode_no}章_{_safe(style_desc, 'style')}.png"
+    shot_tag = f"_镜头{shot_no}" if shot_no else ""
+    path = directory / f"第{episode_no}章{shot_tag}_{_safe(style_desc, 'style')}.png"
     path.write_bytes(content)
     return path
 
@@ -198,11 +206,24 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     episode_no = int(state.get("episode_no") or 0)
     story_id = str(state.get("story_id") or "default").strip()
 
+    # 指定镜头号时，把整集分镜裁剪成该镜头单行，做到"一镜一图"。
+    # 未指定时保持旧行为：整集文本自动选关键画面。
+    shot_no = int(state.get("shot_no") or 0)
+    if shot_no:
+        shots = parse_storyboard_shots(storyboard)
+        matched = next((s for s in shots if s["shot_no"] == shot_no), None)
+        if not matched:
+            raise RuntimeError(
+                f"分镜里找不到镜头 #{shot_no}（本集共 {len(shots)} 个镜头）。"
+            )
+        storyboard = matched["row"]
+
     print("\n" + "=" * 72)
     print("【文生图】")
     print("-" * 72)
     print(
-        f"输入：分镜 {len(storyboard)} 字｜画风={style}｜第{episode_no}集"
+        f"输入：分镜 {len(storyboard)} 字｜镜头="
+        f"{f'#{shot_no}' if shot_no else '整集'}｜画风={style}｜第{episode_no}集"
         f"｜角色锚点 {len(anchor)} 字",
         flush=True,
     )
@@ -262,7 +283,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         for attempt in range(1, attempts + 1):
             try:
                 content = await external_image_api(positive, negative, style)
-                path = _save_image(story_id, episode_no, style, content)
+                path = _save_image(story_id, episode_no, style, content, shot_no)
                 image_path = str(path)
                 status = "done"
                 image_error = ""
@@ -325,6 +346,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
 
     return {
         "style_desc": style,
+        "shot_no": shot_no,
         "image_prompt_positive": positive,
         "image_prompt_negative": negative,
         "image_path": image_path,

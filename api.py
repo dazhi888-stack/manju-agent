@@ -122,6 +122,7 @@ class ConfirmRequest(BaseModel):
 class ImageRequest(BaseModel):
     story_id: str = "demo_story"
     episode_no: int | None = None
+    shot_no: int | None = None
     style_desc: str = ""
     negative_extra: str = ""
 
@@ -593,6 +594,7 @@ async def storyboard_image(req: ImageRequest) -> dict[str, Any]:
             "storyboard": context["storyboard"],
             "script": context["script"],
             "style_desc": req.style_desc or config.DEFAULT_STYLE_DESC,
+            "shot_no": int(req.shot_no or 0),
             "image_negative_extra": req.negative_extra,
             "canon_profiles": context["characters"],
         }
