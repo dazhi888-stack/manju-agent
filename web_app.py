@@ -374,10 +374,17 @@ with tab_story:
         assets = episode.get("assets") or []
         image_list = (assets.get("images") if isinstance(assets, dict) else None) or []
         if image_list:
-            st.caption(f"本集已收录 {len(image_list)} 张图（不满意的可在图下方删除）")
+            st.caption(
+                f"本集已收录 {len(image_list)} 张图（一张有效图绑定一个镜头；"
+                "不满意的可在图下方删除）"
+            )
             for image in image_list:
+                shot_no_tag = image.get("shot_no") or 0
+                caption = image.get("name", "")
+                if shot_no_tag:
+                    caption = f"{caption}（镜头#{shot_no_tag}{'·已绑定' if image.get('bound') else ''}）"
                 with st.container(border=True):
-                    _show_image(image.get("url", ""), image.get("name", ""))
+                    _show_image(image.get("url", ""), caption)
                     if st.button(
                         "🗑️ 删除此图",
                         key=f"del_img_{image.get('name')}",
@@ -584,11 +591,12 @@ with tab_image:
         "生成分镜图", type="primary", use_container_width=True
     )
     regenerate_clicked = image_cols[1].button(
-        "重新生成", use_container_width=True
+        "♻️ 重新生成（自动审核+最多重绘2次）", use_container_width=True
     )
     if generate_clicked or regenerate_clicked:
         st.session_state.image_result = {}
-        with st.spinner("Z-Image 正在生成……"):
+        st.session_state.manual_prompt = ""
+        with st.spinner("出图中：Z-Image 生成 → 审核节点校验（人物数/角色一致性/OOC）……"):
             image = _api(
                 "POST",
                 "/api/storyboard/image",
@@ -598,11 +606,11 @@ with tab_image:
                     "shot_no": selected_shot_no or None,
                     "style_desc": style,
                     "negative_extra": image_negative,
+                    "prompt_override": st.session_state.get("manual_prompt") or "",
                 },
             )
         if not image.get("error"):
             st.session_state.image_result = image
-            st.rerun()
         else:
             st.warning(f"生成失败：{image.get('detail') or image.get('error')}")
 
@@ -611,9 +619,63 @@ with tab_image:
         shot_tag = image_result.get("shot_no")
         label = f"Z-Image 分镜图（镜头 #{shot_tag}）" if shot_tag else "Z-Image 分镜图（整集）"
         _show_image(image_result["image_url"], label)
-        st.caption(f"状态：{image_result.get('image_status')}｜未采用的图不会进入分镜卡片")
 
-        # 确认制：满意才"采用"进分镜卡片，不满意"丢弃"重生成
+        # ---- 审核结果面板 ----
+        image_status = str(image_result.get("image_status") or "")
+        review = image_result.get("image_review") or {}
+        issues = review.get("issues") or []
+        if image_status == "done":
+            st.success("✅ 审核通过：人物数量、角色一致性、OOC 检查均无问题（尚未入库，等你确认）")
+        elif image_status == "needs_manual_prompt":
+            st.error(
+                "⚠️ 自动重绘 2 次仍未通过审核，本镜头已标记为「待人工修改 prompt」，"
+                "不再自动重绘。请在下方修改提示词后手动重绘。\n\n"
+                + "\n".join(f"- {issue}" for issue in issues)
+            )
+        elif issues:
+            st.warning(
+                "审核发现的问题（已自动重绘）：" + "；".join(str(i) for i in issues)
+            )
+        st.caption(
+            f"状态：{image_status}｜自动重绘 {image_result.get('image_retry_count') or 0} 次"
+            f"｜未采用的图不会进入分镜卡片"
+        )
+
+        # 待人工修改 prompt：给编辑框 + 手动重绘
+        if image_result.get("needs_manual_prompt"):
+            suggested = str(review.get("suggested_prompt_fix") or "")
+            default_prompt = (
+                st.session_state.get("manual_prompt")
+                or suggested
+                or str(image_result.get("image_prompt_positive") or "")
+            )
+            manual = st.text_area(
+                "人工修改绘图提示词（改完点下方按钮，直接以此重绘）",
+                value=default_prompt,
+                height=150,
+                key="manual_prompt_box",
+            )
+            st.session_state.manual_prompt = manual
+            if st.button("📝 用修改后的提示词重绘", type="primary", use_container_width=True):
+                with st.spinner("按人工提示词重绘中……"):
+                    image = _api(
+                        "POST",
+                        "/api/storyboard/image",
+                        {
+                            "story_id": story_id,
+                            "episode_no": int(image_episode),
+                            "shot_no": selected_shot_no or None,
+                            "style_desc": style,
+                            "negative_extra": image_negative,
+                            "prompt_override": manual,
+                        },
+                    )
+                if not image.get("error"):
+                    st.session_state.image_result = image
+                else:
+                    st.warning(f"重绘失败：{image.get('detail') or image.get('error')}")
+
+        # 确认制：满意才"采用"进分镜卡片（绑定 shot_id），不满意"丢弃"
         if image_result.get("image_name"):
             keep_cols = st.columns(2)
             if keep_cols[0].button(
@@ -625,12 +687,18 @@ with tab_image:
                     {
                         "story_id": story_id,
                         "file_name": image_result["image_name"],
+                        "episode_no": int(image_episode),
+                        "shot_no": int(shot_tag or 0),
                     },
                 )
                 if confirmed.get("error"):
                     st.warning(f"采用失败：{confirmed.get('detail')}")
                 else:
-                    st.success("已存入分镜卡片，可在「故事」页查看。")
+                    binding = confirmed.get("binding") or {}
+                    st.success(
+                        f"已存入分镜卡片并绑定镜头（shot_id={binding.get('shot_id')}）。"
+                        "同镜头重新采用会自动替换旧图。"
+                    )
                     st.session_state.image_result = {}
             if keep_cols[1].button("🗑️ 丢弃此图", use_container_width=True):
                 discarded = _api(

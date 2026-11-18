@@ -135,6 +135,9 @@ IMAGE_SIZE = (os.getenv("IMAGE_SIZE") or "1920x1080").strip()
 IMAGE_PROMPT_USE_LLM = _env_bool("IMAGE_PROMPT_USE_LLM", False)
 IMAGE_TIMEOUT_SECONDS = _env_float("IMAGE_TIMEOUT_SECONDS", 180.0)
 IMAGE_GEN_MAX_RETRIES = _env_int("IMAGE_GEN_MAX_RETRIES", 2)
+# 分镜图审核：LLM 文本层 OOC 审核（CLIP 相似度与单人约束始终开启）。
+# IMAGE_GEN_MAX_RETRIES=2 表示同一镜头首次生成 + 最多自动重绘 2 次。
+IMAGE_REVIEW_USE_LLM = _env_bool("IMAGE_REVIEW_USE_LLM", True)
 
 # 视频：Seedance（火山方舟）
 SEEDANCE_API_KEY = (

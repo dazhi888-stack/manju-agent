@@ -18,7 +18,8 @@ from pathlib import Path
 from typing import Any
 
 import config
-from services.character_reference import image_similarity, reference_block, reference_images
+from services.character_reference import reference_block
+from services.image_review import review_shot_image
 from services.shot_prompt import parse_storyboard_shots
 from prompts import IMAGE_PROMPT_SYSTEM, build_image_prompt_prompt
 from state import ComicState, ImagePromptDraft
@@ -185,7 +186,13 @@ def _save_image(
     directory = config.OUTPUT_DIR / _safe(story_id, "default") / sub_dir
     directory.mkdir(parents=True, exist_ok=True)
     shot_tag = f"_镜头{shot_no}" if shot_no else ""
-    path = directory / f"第{episode_no}章{shot_tag}_{_safe(style_desc, 'style')}.png"
+    # 待定区文件名带时间戳：同一镜头多次生成互不覆盖，浏览器也不会拿缓存旧图
+    stamp = time.strftime("%H%M%S") if pending else ""
+    suffix = f"_{stamp}" if stamp else ""
+    path = (
+        directory
+        / f"第{episode_no}章{shot_tag}_{_safe(style_desc, 'style')}{suffix}.png"
+    )
     path.write_bytes(content)
     return path
 
@@ -217,10 +224,12 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     episode_no = int(state.get("episode_no") or 0)
     story_id = str(state.get("story_id") or "default").strip()
 
-    # 指定镜头号时，把整集分镜裁剪成该镜头单行，做到"一镜一图"。
+    # 指定镜头号时做"切片隔离"：只保留当前镜头的结构化描述，
+    # 其他镜头的文本一律不进入 prompt（一镜一图）。
     # 未指定时保持旧行为：整集文本自动选关键画面。
     shot_no = int(state.get("shot_no") or 0)
     pending = bool(state.get("image_pending"))
+    prompt_override = str(state.get("prompt_override") or "").strip()
     if shot_no:
         shots = parse_storyboard_shots(storyboard)
         matched = next((s for s in shots if s["shot_no"] == shot_no), None)
@@ -228,7 +237,11 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
             raise RuntimeError(
                 f"分镜里找不到镜头 #{shot_no}（本集共 {len(shots)} 个镜头）。"
             )
-        storyboard = matched["row"]
+        storyboard = (
+            f"镜头#{matched['shot_no']}｜时长：{matched['duration']}｜"
+            f"画面：{matched['visual']}｜台词/旁白：{matched['dialogue']}｜"
+            f"氛围：{matched['mood']}"
+        )
 
     print("\n" + "=" * 72)
     print("【文生图】")
@@ -247,7 +260,12 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         else []
     )
 
-    if config.IMAGE_PROMPT_USE_LLM:
+    if prompt_override:
+        # 审核两次未通过后，人工修改 prompt 直接覆盖，不再走 LLM/模板
+        positive = prompt_override
+        negative = _merge_negative(user_extra)
+        print("[文生图] 使用人工修改后的提示词重绘。", flush=True)
+    elif config.IMAGE_PROMPT_USE_LLM:
         # 可选：让 DeepSeek 扩写 prompt；默认关闭，生图本身始终走 Z-Image。
         try:
             draft = await asyncio.to_thread(
@@ -278,11 +296,11 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     ref_block = reference_block(story_id)
     if ref_block:
         positive = ref_block + "\n" + positive
-    refs = reference_images(story_id)
     status = "prompt_only"
     image_path = ""
     image_error = ""
     retry_count = 0
+    review: dict[str, Any] = {}
 
     if not config.IMAGE_API_URL or not config.IMAGE_API_KEY:
         print(
@@ -290,39 +308,59 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
             flush=True,
         )
     else:
+        # 首次生成 + 最多自动重绘 IMAGE_GEN_MAX_RETRIES 次（默认 2 次）。
         max_retries = max(0, int(config.IMAGE_GEN_MAX_RETRIES))
         attempts = max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
                 content = await external_image_api(positive, negative, style)
                 path = _save_image(story_id, episode_no, style, content, shot_no, pending)
-                image_path = str(path)
-                status = "done"
-                image_error = ""
-                print(f"[文生图] 图片已保存：{image_path}", flush=True)
+                print(f"[文生图] 图片已保存：{path}", flush=True)
 
-                # 有角色基准图时，做 CLIP 图像相似度校验；不足最多重试 2 次。
-                if refs:
-                    check = image_similarity(story_id, image_path)
+                # ---- 审核节点（branch_validate_node 图片层）----
+                # 人物数规则 + CLIP 角色一致性 +（可选）LLM OOC，全部同步执行。
+                review = await asyncio.to_thread(
+                    review_shot_image,
+                    state,
+                    storyboard,
+                    positive,
+                    negative,
+                    str(path),
+                )
+                # 采纳审核强化后的 prompt（如单人约束），下一次重绘生效
+                positive = str(review.get("prompt") or positive)
+                negative = str(review.get("negative") or negative)
+
+                if review.get("passed"):
+                    image_path = str(path)
+                    status = "done"
+                    image_error = ""
                     print(
-                        f"[文生图] 角色相似度={check['similarity']}"
-                        f"｜阈值={check['threshold']}｜backend={check['embedding_backend']}",
+                        "[文生图] ✅ 审核通过（人物/角色/一致性）", flush=True
+                    )
+                    break
+
+                image_error = "；".join(review.get("issues") or []) or "审核未通过"
+                retry_count = attempt
+                if attempt < attempts:
+                    status = "review_failed"
+                    print(
+                        f"[文生图] ❌ 审核未通过（第{attempt}/{attempts}次）："
+                        f"{image_error}，自动重绘中……",
                         flush=True,
                     )
-                    if not check["passed"]:
-                        image_error = (
-                            f"角色样貌 OOC：相似度 {check['similarity']} "
-                            f"低于阈值 {check['threshold']}（{check.get('character') or '-'}）"
-                        )
-                        status = "character_ooc"
-                        if attempt < attempts:
-                            retry_count = attempt
-                            print(f"[文生图] {image_error}，重试中……", flush=True)
-                            await asyncio.sleep(min(2 ** (attempt - 1), 4))
-                            continue
-                        status = "character_ooc_failed"
-                        image_path = ""
-                        break
+                    await asyncio.sleep(min(2 ** (attempt - 1), 4))
+                    continue
+
+                # 达到自动重绘上限：标记待人工修改 prompt，不再自动生成。
+                # 图片保留在待定区供人工查看（坏图不入分镜卡片）。
+                status = "needs_manual_prompt"
+                image_path = str(path)
+                print(
+                    f"[文生图] ⚠️ 自动重绘 {max_retries} 次仍未通过审核，"
+                    f"镜头已标记为「待人工修改 prompt」。原因：{image_error}",
+                    flush=True,
+                )
                 break
             except ImageApiError as exc:
                 image_error = str(exc)
@@ -344,12 +382,14 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     record = {
         "story_id": story_id,
         "episode_no": episode_no,
+        "shot_no": shot_no,
         "style_desc": style,
         "positive_prompt": positive,
         "negative_prompt": negative,
         "image_path": image_path,
         "status": status,
         "retry_count": retry_count,
+        "review_issues": list(review.get("issues") or []),
         "error": image_error,
         "elapsed_ms": elapsed_ms,
     }
@@ -360,6 +400,8 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         "style_desc": style,
         "shot_no": shot_no,
         "image_pending": pending,
+        "needs_manual_prompt": status == "needs_manual_prompt",
+        "image_review": review,
         "image_prompt_positive": positive,
         "image_prompt_negative": negative,
         "image_path": image_path,
@@ -368,14 +410,14 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         "image_error": image_error,
         "image_gen_ms": elapsed_ms,
         "error_message": (
-            image_error if status == "character_ooc_failed" else ""
+            image_error if status == "needs_manual_prompt" else ""
         ),
         "image_records": [record],
         "trace": [
             f"文生图：剧本 {len(str(state.get('script') or ''))} 字，"
-            f"分镜 {len(storyboard)} 字，画风={style}，"
-            f"prompt {len(positive)} 字，路径={image_path or '-'}，"
-            f"状态={status}，重试 {retry_count} 次，耗时 {elapsed_ms}ms"
+            f"分镜 {len(storyboard)} 字，镜头={f'#{shot_no}' if shot_no else '整集'}，"
+            f"画风={style}，prompt {len(positive)} 字，路径={image_path or '-'}，"
+            f"状态={status}，重绘 {retry_count} 次，耗时 {elapsed_ms}ms"
         ],
     }
 

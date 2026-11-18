@@ -36,6 +36,7 @@ from services.character_reference import (
 from graph import graph
 from stores.global_profile import global_profile_cards, load_global_profile, profile_path
 from services.image_gen import ImageApiError, external_image_api, image_gen_node
+from services.image_manifest import bind_shot, entries_for_episode, load_manifest, unbind_file
 from nodes.video_prompt import build_video_prompt_node
 from services.output_writer import save_state_markdown
 from services.shot_prompt import (
@@ -126,6 +127,7 @@ class ImageRequest(BaseModel):
     shot_no: int | None = None
     style_desc: str = ""
     negative_extra: str = ""
+    prompt_override: str = ""
 
 
 class PromptRequest(BaseModel):
@@ -234,14 +236,33 @@ def _episode_assets(story_id: str, episode_no: int) -> dict[str, Any]:
         for pattern in globs:
             for path in directory.glob(pattern):
                 if path.suffix.lower() in suffixes:
+                    shot_no = _shot_no_from_name(path.name)
                     bucket.append(
                         {
                             "name": path.name,
                             "path": str(path),
                             "url": _media_url(str(path)),
+                            "shot_no": shot_no,
                         }
                     )
+    # manifest 绑定信息：一张有效图绑定一个 shot_id；绑定图标记 bound=True 并置顶
+    bindings = load_manifest(story_id)
+    bound_names = {
+        str(entry.get("file_name"))
+        for entry in bindings.values()
+        if int(entry.get("episode_no") or 0) == int(episode_no)
+    }
+    for image in images:
+        if image["name"] in bound_names:
+            image["bound"] = True
+    images.sort(key=lambda item: (not item.get("bound", False), item["name"]))
     return {"images": images, "videos": videos, "prompts": prompts}
+
+
+def _shot_no_from_name(name: str) -> int:
+    """从文件名解析镜头号（第N章_镜头M_...）；整集图返回 0。"""
+    match = re.search(r"镜头(\d+)", str(name or ""))
+    return int(match.group(1)) if match else 0
 
 
 async def _invoke_graph(initial: dict[str, Any], thread_id: str) -> dict[str, Any]:
@@ -597,6 +618,7 @@ async def storyboard_image(req: ImageRequest) -> dict[str, Any]:
             "style_desc": req.style_desc or config.DEFAULT_STYLE_DESC,
             "shot_no": int(req.shot_no or 0),
             "image_negative_extra": req.negative_extra,
+            "prompt_override": (req.prompt_override or "").strip(),
             "canon_profiles": context["characters"],
             # 独立生成的图先进待定区，用户确认后才进分镜卡片
             "image_pending": True,
@@ -614,6 +636,8 @@ async def storyboard_image(req: ImageRequest) -> dict[str, Any]:
 class AssetActionRequest(BaseModel):
     story_id: str = "demo_story"
     file_name: str = ""
+    episode_no: int = 0
+    shot_no: int = 0
 
 
 def _pending_image_path(story_id: str, file_name: str) -> Path:
@@ -627,17 +651,28 @@ def _pending_image_path(story_id: str, file_name: str) -> Path:
 
 @app.post("/api/storyboard/image/confirm")
 async def confirm_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
-    """用户确认满意：把图从待定区移动到正式 images 目录，分镜卡片即可看到。"""
+    """
+    用户确认满意：图从待定区移入正式目录，并绑定到 shot_id（manifest）。
+    一张有效图绑定一个镜头；同一镜头重新采用会替换并删除旧图。
+    """
     try:
         source = _pending_image_path(req.story_id, req.file_name)
         target_dir = (config.OUTPUT_DIR / req.story_id / "images").resolve()
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / source.name
         shutil.move(str(source), str(target))
+        # 绑定 shot_id；未指定镜头（整集）时按 s0 记录
+        binding = bind_shot(
+            req.story_id,
+            int(req.episode_no or 0),
+            int(req.shot_no or 0),
+            target.name,
+        )
         return {
             "image_name": target.name,
             "image_path": str(target),
             "image_url": _media_url(str(target)),
+            "binding": binding,
         }
     except HTTPException:
         raise
@@ -647,10 +682,11 @@ async def confirm_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
 
 @app.post("/api/storyboard/image/discard")
 async def discard_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
-    """用户不满意：直接删除待定区图片。"""
+    """用户不满意：直接删除待定区图片（并解除 shot 绑定）。"""
     try:
         source = _pending_image_path(req.story_id, req.file_name)
-        source.delete()
+        source.unlink()
+        unbind_file(req.story_id, req.file_name)
         return {"discarded": req.file_name}
     except HTTPException:
         raise
@@ -667,11 +703,13 @@ async def delete_storyboard_image(req: AssetActionRequest) -> dict[str, Any]:
         # 只允许删除 images 目录（含待定区）里的文件，防路径穿越
         candidate = (images_dir / Path(req.file_name).name).resolve()
         if candidate.parent == images_dir and candidate.is_file():
-            candidate.delete()
+            candidate.unlink()
+            unbind_file(req.story_id, req.file_name)
             return {"deleted": candidate.name}
         candidate_pending = (pending_dir / Path(req.file_name).name).resolve()
         if candidate_pending.parent == pending_dir and candidate_pending.is_file():
-            candidate_pending.delete()
+            candidate_pending.unlink()
+            unbind_file(req.story_id, req.file_name)
             return {"deleted": candidate_pending.name}
         raise HTTPException(status_code=404, detail=f"找不到图片：{req.file_name}")
     except HTTPException:

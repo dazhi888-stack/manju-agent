@@ -106,6 +106,9 @@ class ComicState(TypedDict, total=False):
     shot_no: int                   # 指定镜头号；0/缺省 = 整集（自动选关键画面）
     image_pending: bool            # 独立生成=True：图先入待定区，确认后才进分镜卡片
     image_negative_extra: str      # 用户额外负面词
+    prompt_override: str           # 审核两次未通过后，人工修改的绘图提示词
+    needs_manual_prompt: bool      # 自动重绘上限用尽，等待人工改 prompt
+    image_review: dict             # 审核结果（人物数/角色一致性/LLM OOC）
     image_prompt_positive: str
     image_prompt_negative: str
     image_path: str
