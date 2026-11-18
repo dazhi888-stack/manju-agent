@@ -87,6 +87,15 @@ def check_env() -> bool:
     return False
 
 
+def port_in_use(port: int) -> bool:
+    """检查端口是否已被占用（占用会导致 uvicorn WinError 10048）。"""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.settimeout(1)
+        return sock.connect_ex(("127.0.0.1", port)) == 0
+
+
 def main() -> None:
     print("=" * 60)
     print("AI 漫剧 Agent 一键启动")
@@ -94,6 +103,14 @@ def main() -> None:
 
     if not (check_python() and check_packages() and check_env()):
         sys.exit(1)
+
+    for port, name in ((8000, "后端 FastAPI"), (8501, "前端 Streamlit")):
+        if port_in_use(port):
+            print(f"[启动失败] 端口 {port} 已被占用（{name} 无法绑定）。")
+            print("处理方法：先关闭占用该端口的旧进程，再重新运行本脚本：")
+            print(f"    netstat -ano | findstr :{port}")
+            print("    taskkill /PID <上面查到的PID> /F")
+            sys.exit(1)
 
     print("[启动] 后端 FastAPI -> http://127.0.0.1:8000")
     backend = subprocess.Popen(BACKEND_CMD, cwd=PROJECT_DIR)
