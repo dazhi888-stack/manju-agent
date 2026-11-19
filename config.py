@@ -138,6 +138,9 @@ IMAGE_GEN_MAX_RETRIES = _env_int("IMAGE_GEN_MAX_RETRIES", 2)
 # 分镜图审核：LLM 文本层 OOC 审核（CLIP 相似度与单人约束始终开启）。
 # IMAGE_GEN_MAX_RETRIES=2 表示同一镜头首次生成 + 最多自动重绘 2 次。
 IMAGE_REVIEW_USE_LLM = _env_bool("IMAGE_REVIEW_USE_LLM", True)
+# 整集批量出图的并发数：同时打满多个镜头的生成请求，单镜头审核互不影响。
+# 过大会触发图片服务商限流（429），默认 3 是稳妥值。
+IMAGE_BATCH_CONCURRENCY = _env_int("IMAGE_BATCH_CONCURRENCY", 3)
 
 # 视频：Seedance（火山方舟）
 SEEDANCE_API_KEY = (

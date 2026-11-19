@@ -618,12 +618,15 @@ with tab_image:
         selected_shot_no = int(shot_choice.split("｜")[0].lstrip("#"))
 
     image_negative = st.text_input("额外负面词（可留空）")
-    image_cols = st.columns(2)
+    image_cols = st.columns(3)
     generate_clicked = image_cols[0].button(
         "生成分镜图", type="primary", use_container_width=True
     )
     regenerate_clicked = image_cols[1].button(
         "♻️ 重新生成（自动审核+最多重绘2次）", use_container_width=True
+    )
+    batch_clicked = image_cols[2].button(
+        "⚡ 整集批量出图（并发3路）", use_container_width=True
     )
     if generate_clicked or regenerate_clicked:
         st.session_state.image_result = {}
@@ -645,6 +648,42 @@ with tab_image:
             st.session_state.image_result = image
         else:
             st.warning(f"生成失败：{image.get('detail') or image.get('error')}")
+    if batch_clicked:
+        st.session_state.batch_image_result = {}
+        with st.spinner("整集批量出图：多镜头并发生成 → 每张独立过审核 → 未过的自动重绘……"):
+            batch = _api(
+                "POST",
+                "/api/storyboard/image/batch",
+                {
+                    "story_id": story_id,
+                    "episode_no": int(image_episode),
+                    "style_desc": style,
+                    "negative_extra": image_negative,
+                },
+            )
+        if not batch.get("error"):
+            st.session_state.batch_image_result = batch
+        else:
+            st.warning(f"批量出图失败：{batch.get('detail') or batch.get('error')}")
+
+    batch_result = st.session_state.get("batch_image_result") or {}
+    if batch_result.get("results"):
+        summary = batch_result.get("summary") or {}
+        st.caption(
+            f"批量完成：共 {summary.get('total', 0)} 镜头｜✅ 通过 {summary.get('done', 0)}"
+            f"｜⚠️ 待人工 {summary.get('needs_manual', 0)}"
+            f"｜❌ 失败 {summary.get('failed', 0)}"
+            f"｜总耗时 {batch_result.get('total_seconds', 0)}s"
+        )
+        for item in batch_result.get("results") or []:
+            shot_no = item.get("shot_no")
+            status = str(item.get("status") or "")
+            mark = {"done": "✅", "needs_manual_prompt": "⚠️"}.get(status, "❌")
+            err = item.get("image_error") or ""
+            line = f"{mark} 镜头#{shot_no}｜{status}｜耗时 {item.get('elapsed_seconds', '-')}s"
+            if err:
+                line += f"｜{err}"
+            st.caption(line)
 
     image_result = st.session_state.get("image_result") or {}
     if image_result.get("image_url"):

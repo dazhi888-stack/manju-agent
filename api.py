@@ -130,6 +130,16 @@ class ImageRequest(BaseModel):
     prompt_override: str = ""
 
 
+class BatchImageRequest(BaseModel):
+    """整集批量出图：不指定 shot_nos 时默认全集镜头。"""
+
+    story_id: str = "demo_story"
+    episode_no: int | None = None
+    shot_nos: list[int] = []
+    style_desc: str = ""
+    negative_extra: str = ""
+
+
 class PromptRequest(BaseModel):
     story_id: str = "demo_story"
     episode_no: int | None = None
@@ -693,6 +703,99 @@ async def storyboard_image(req: ImageRequest) -> dict[str, Any]:
         if image_path:
             result["image_name"] = Path(image_path).name
         return result
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+@app.post("/api/storyboard/image/batch")
+async def storyboard_image_batch(req: BatchImageRequest) -> dict[str, Any]:
+    """
+    整集批量出图：多个镜头并发跑 image_gen_node（各自含切片、审核、重绘）。
+    并发数由 IMAGE_BATCH_CONCURRENCY 控制（默认 3），避免触发服务商限流。
+    所有图进待定区，仍需逐张确认后才会绑定进分镜卡片。
+    """
+    try:
+        context = load_episode_context(req.story_id, req.episode_no)
+        all_shots = parse_storyboard_shots(context["storyboard"])
+        if not all_shots:
+            raise HTTPException(status_code=404, detail="该集没有可用的分镜镜头。")
+        target_nos = (
+            [int(n) for n in req.shot_nos if int(n) > 0]
+            if req.shot_nos
+            else [int(s["shot_no"]) for s in all_shots]
+        )
+        valid_nos = {int(s["shot_no"]) for s in all_shots}
+        unknown = [n for n in target_nos if n not in valid_nos]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"分镜里不存在的镜头号：{unknown}（本集共 {len(all_shots)} 镜头）",
+            )
+
+        concurrency = max(1, int(config.IMAGE_BATCH_CONCURRENCY))
+        semaphore = asyncio.Semaphore(concurrency)
+        started = time.perf_counter()
+
+        async def _run_one(shot_no: int) -> dict[str, Any]:
+            async with semaphore:
+                state: ComicState = {
+                    "story_id": req.story_id,
+                    "episode_no": context["episode_no"],
+                    "storyboard": context["storyboard"],
+                    "script": context["script"],
+                    "style_desc": req.style_desc or config.DEFAULT_STYLE_DESC,
+                    "shot_no": shot_no,
+                    "image_negative_extra": req.negative_extra,
+                    "canon_profiles": context["characters"],
+                    "image_pending": True,
+                }
+                one_started = time.perf_counter()
+                try:
+                    result = await image_gen_node(state)
+                    result["shot_no"] = shot_no
+                    result["image_url"] = _media_url(result.get("image_path", ""))
+                    image_path = result.get("image_path") or ""
+                    if image_path:
+                        result["image_name"] = Path(image_path).name
+                    result["elapsed_seconds"] = round(
+                        time.perf_counter() - one_started, 1
+                    )
+                    return result
+                except Exception as exc:
+                    # 单镜头失败不拖垮整批，记录后继续
+                    print(
+                        f"[批量出图] 镜头#{shot_no} 失败：{type(exc).__name__}: {exc}",
+                        flush=True,
+                    )
+                    return {
+                        "shot_no": shot_no,
+                        "status": "failed",
+                        "image_error": f"{type(exc).__name__}: {exc}",
+                        "image_path": "",
+                        "image_url": "",
+                    }
+
+        results = await asyncio.gather(*[_run_one(n) for n in target_nos])
+        elapsed = round(time.perf_counter() - started, 1)
+        done = sum(1 for r in results if r.get("status") == "done")
+        review_failed = sum(1 for r in results if r.get("status") == "needs_manual_prompt")
+        failed = sum(1 for r in results if r.get("status") == "failed")
+        print(
+            f"[批量出图] 完成：{len(target_nos)} 镜头｜并发 {concurrency}"
+            f"｜通过 {done}｜待人工 {review_failed}｜失败 {failed}"
+            f"｜总耗时 {elapsed}s（串行预估 {sum(r.get('elapsed_seconds', 0) for r in results):.0f}s）",
+            flush=True,
+        )
+        return {
+            "story_id": req.story_id,
+            "episode_no": context["episode_no"],
+            "concurrency": concurrency,
+            "total_seconds": elapsed,
+            "summary": {"total": len(target_nos), "done": done, "needs_manual": review_failed, "failed": failed},
+            "results": results,
+        }
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
