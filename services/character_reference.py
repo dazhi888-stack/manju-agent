@@ -247,8 +247,9 @@ def reference_block(story_id: str, names: list[str] | None = None) -> str:
         grouped.setdefault(str(ref.get("name") or ""), []).append(ref)
     lines = ["@Image 角色基准参考图（必须严格保持以下角色长相）："]
     for name, items in grouped.items():
+        # 提示词里只放文件名，不暴露本机绝对路径（提示词可能被下游模型/日志留存）。
         paths = "；".join(
-            f"{item.get('image_role')}: {item.get('image_path')}"
+            f"{item.get('image_role')}: {Path(str(item.get('image_path'))).name}"
             for item in items
             if item.get("image_path")
         )

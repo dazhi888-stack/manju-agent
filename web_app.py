@@ -332,8 +332,17 @@ with tab_story:
         detail = _api("GET", f"/api/story/{story_id}")
         if not detail.get("error"):
             st.session_state.story_detail = detail
+        # 同步拉角色基准图入库状态，让角色库能看到已确认入 Chroma 的角色。
+        overview = _api("GET", f"/api/characters/{story_id}")
+        if not overview.get("error"):
+            st.session_state.character_overview = overview
 
     detail = st.session_state.get("story_detail") or {}
+    overview = st.session_state.get("character_overview") or {}
+    refs_by_name = {
+        str(item.get("name") or ""): (item.get("reference_images") or [])
+        for item in (overview.get("characters") or [])
+    }
     if detail:
         st.caption(
             f"最新第{detail.get('latest_episode')}集｜角色 {len(detail.get('roles') or [])} 个"
@@ -343,10 +352,18 @@ with tab_story:
             cols = st.columns(min(3, len(roles)))
             for index, role in enumerate(roles):
                 with cols[index % len(cols)]:
-                    st.markdown(f"**{role.get('name', '未命名')}**")
+                    name = str(role.get("name", "未命名"))
+                    refs = refs_by_name.get(name) or []
+                    badge = "✅ 已入库" if refs else "⚪ 未生成基准图"
+                    st.markdown(f"**{name}**（{badge}）")
                     st.caption(role.get("role") or "")
                     st.write(role.get("appearance") or "外貌未说明")
                     st.caption(role.get("relationships") or "")
+                    for ref_image in refs:
+                        _show_image(
+                            ref_image.get("url", ""),
+                            f"基准图·{ref_image.get('image_role') or 'full'}",
+                        )
         with st.expander("历史剧情摘要", expanded=False):
             for summary in detail.get("summaries") or []:
                 st.markdown(
@@ -486,7 +503,11 @@ with tab_image:
             "生成角色基准图", type="primary", use_container_width=True
         )
         remade_ref = ref_cols[1].button(
-            "重新生成基准图", use_container_width=True
+            "重新生成基准图（消耗额度）", use_container_width=True
+        )
+        st.caption(
+            "已确认入库的角色点「生成」会直接复用入库图，不消耗额度；"
+            "只有「重新生成」才会真正重画。"
         )
         if make_ref or remade_ref:
             st.session_state.reference_result = {}
@@ -502,6 +523,7 @@ with tab_image:
                         "appearance_override": custom_appearance,
                         "nonce": str(time.time_ns()),
                         "variation": bool(remade_ref),
+                        "force_new": bool(remade_ref),
                     },
                 )
             if not reference.get("error"):
@@ -509,6 +531,11 @@ with tab_image:
                 st.rerun()
 
         reference = st.session_state.get("reference_result") or {}
+        if reference.get("reused"):
+            st.info(
+                "✅ 该角色已有确认入库的基准图，本次直接复用（未调用出图接口）。"
+                "如需换图请点「重新生成基准图（消耗额度）」。"
+            )
         images = reference.get("images") or []
         if images:
             cols = st.columns(len(images))
@@ -534,6 +561,10 @@ with tab_image:
                 if not confirmed.get("error"):
                     st.session_state.reference_confirmed = confirmed
                     st.success("角色基准图与结构化档案已写入 Chroma")
+                    # 同步刷新入库状态，切到角色库立即可见，无需再点加载。
+                    refreshed = _api("GET", f"/api/characters/{story_id}")
+                    if not refreshed.get("error"):
+                        st.session_state.character_overview = refreshed
                     st.json(confirmed)
 
         confirmed = st.session_state.get("reference_confirmed") or {}

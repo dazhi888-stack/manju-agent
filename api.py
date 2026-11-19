@@ -161,6 +161,8 @@ class CharacterGenerateRequest(BaseModel):
     appearance_override: str = ""
     nonce: str = ""
     variation: bool = False
+    # True 才绕过复用、真正重新出图；默认复用已入库基准图，避免重复消耗额度。
+    force_new: bool = False
 
 
 class CharacterConfirmRequest(BaseModel):
@@ -497,9 +499,26 @@ async def episode_detail(story_id: str, episode_no: int) -> dict[str, Any]:
 @app.get("/api/characters/{story_id}")
 async def character_references(story_id: str) -> dict[str, Any]:
     profile = load_global_profile(story_id) or {}
+    # 按角色聚合已确认入库的基准图，供角色库 UI 直接展示。
+    refs_by_name: dict[str, list[dict[str, Any]]] = {}
+    for ref in get_character_references(story_id):
+        refs_by_name.setdefault(str(ref.get("name") or ""), []).append(
+            {
+                "image_role": ref.get("image_role") or "",
+                "path": ref.get("image_path") or "",
+                "url": _media_url(ref.get("image_path") or ""),
+            }
+        )
+    characters = []
+    for item in profile.get("characters") or []:
+        name = str(item.get("name") or "")
+        images = refs_by_name.get(name) or []
+        characters.append(
+            {**item, "reference_images": images, "confirmed": bool(images)}
+        )
     return {
         "story_id": story_id,
-        "characters": profile.get("characters") or [],
+        "characters": characters,
         "references": get_character_references(story_id),
     }
 
@@ -517,6 +536,36 @@ async def generate_character_reference(req: CharacterGenerateRequest) -> dict[st
     )
     if not card:
         raise HTTPException(status_code=404, detail=f"角色不存在：{req.character_name}")
+    # 复用优先：该角色已有确认入库的基准图时直接返回，不再调用出图 API。
+    if not req.force_new:
+        existing = [
+            ref
+            for ref in get_character_references(req.story_id)
+            if str(ref.get("name") or "") == req.character_name
+        ]
+        if existing:
+            version = req.nonce or str(int(time.time() * 1000))
+            images = [
+                {
+                    "role": ref.get("image_role") or "full",
+                    "path": ref.get("image_path") or "",
+                    "url": f"{_media_url(ref.get('image_path') or '')}?v={version}",
+                }
+                for ref in existing
+            ]
+            print(
+                f"[角色基准图] {req.character_name} 已有入库基准图，"
+                f"复用 {len(images)} 张，跳过出图 API。",
+                flush=True,
+            )
+            return {
+                "story_id": req.story_id,
+                "character_name": req.character_name,
+                "profile": profile_from_card(card, req.story_id).model_dump(),
+                "prompts": {},
+                "images": images,
+                "reused": True,
+            }
     base = _reference_profile(card, req.story_id, req.appearance_override)
     prompts = character_prompts(base, req.style_desc)
     safe_prompts = character_prompts(base, req.style_desc, safe=True)
