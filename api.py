@@ -37,6 +37,7 @@ from graph import graph
 from stores.global_profile import global_profile_cards, load_global_profile, profile_path
 from services.image_gen import ImageApiError, external_image_api, image_gen_node
 from services.image_manifest import bind_shot, entries_for_episode, load_manifest, unbind_file
+from services.compose import DEFAULT_VOICE as COMPOSE_DEFAULT_VOICE, compose_episode
 from nodes.video_prompt import build_video_prompt_node
 from services.output_writer import save_state_markdown
 from services.shot_prompt import (
@@ -798,6 +799,41 @@ async def storyboard_image_batch(req: BatchImageRequest) -> dict[str, Any]:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+
+class ComposeRequest(BaseModel):
+    """成片合成：分镜图 + 台词 TTS + 字幕 → 完整 mp4。"""
+
+    story_id: str = "demo_story"
+    episode_no: int
+    voice: str = ""
+    burn_subtitles: bool = True
+
+
+@app.post("/api/compose")
+async def compose_episode_api(req: ComposeRequest) -> dict[str, Any]:
+    """合成本集成片（纯本地 ffmpeg + 免费 TTS，不消耗图片/视频额度）。"""
+    if int(req.episode_no or 0) <= 0:
+        raise HTTPException(status_code=422, detail="episode_no 必须为正整数")
+    voice = (req.voice or "").strip() or COMPOSE_DEFAULT_VOICE
+    try:
+        report = await asyncio.to_thread(
+            compose_episode,
+            req.story_id,
+            int(req.episode_no),
+            voice,
+            None,
+            bool(req.burn_subtitles),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"依赖缺失：{exc}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+    report["video_url"] = _media_url(report.get("output_path", ""))
+    report["srt_url"] = _media_url(report.get("srt_path", ""))
+    return report
 
 
 class AssetActionRequest(BaseModel):

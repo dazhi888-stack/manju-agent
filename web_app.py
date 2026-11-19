@@ -806,6 +806,69 @@ with tab_image:
 
 
 with tab_video:
+    st.subheader("🎬 成片合成（配音 + 字幕 + 拼接）")
+    st.caption(
+        "用已入库的分镜图 + 台词 TTS（微软免费语音）+ ffmpeg 本地合成完整 mp4，"
+        "不消耗图片/视频额度；没有绑定图的镜头会跳过并在报告中说明。"
+    )
+    compose_cols = st.columns([1, 2])
+    compose_episode_no = compose_cols[0].number_input(
+        "合成集号",
+        min_value=1,
+        value=int(st.session_state.get("episode", {}).get("episode_no") or 1),
+        step=1,
+        key="compose_episode_no",
+    )
+    compose_clicked = compose_cols[1].button(
+        "🎬 合成本集成片", type="primary", use_container_width=True
+    )
+    burn_subtitles = st.checkbox(
+        "画面烧录字幕（旧分镜图若自带台词文字，可关掉，仅保留外挂 srt）",
+        value=True,
+        key="burn_subtitles",
+    )
+    if compose_clicked:
+        st.session_state.compose_result = {}
+        with st.spinner(
+            "合成中：TTS 配音 → 字幕烧录 → ffmpeg 拼接（一集约 1~3 分钟）……"
+        ):
+            report = _api(
+                "POST",
+                "/api/compose",
+                {
+                    "story_id": story_id,
+                    "episode_no": int(compose_episode_no),
+                    "burn_subtitles": bool(burn_subtitles),
+                },
+            )
+        if not report.get("error"):
+            st.session_state.compose_result = report
+        else:
+            st.warning(f"合成失败：{report.get('detail') or report.get('error')}")
+
+    compose_result = st.session_state.get("compose_result") or {}
+    if compose_result.get("video_url"):
+        composed = compose_result.get("shots") or []
+        skipped = compose_result.get("skipped") or []
+        st.success(
+            f"合成完成：{len(composed)} 个镜头｜成片时长 {compose_result.get('video_seconds')}s"
+            f"｜配音音色 {compose_result.get('tts_voice')}"
+            f"｜合成耗时 {compose_result.get('compose_seconds')}s"
+        )
+        st.video(compose_result["video_url"])
+        link_cols = st.columns(2)
+        link_cols[0].markdown(f"[⬇️ 下载成片 mp4]({compose_result['video_url']})")
+        if compose_result.get("srt_url"):
+            link_cols[1].markdown(f"[⬇️ 下载外挂字幕 srt]({compose_result['srt_url']})")
+        if skipped:
+            st.caption(
+                "跳过的镜头："
+                + "；".join(
+                    f"#{item.get('shot_no')}（{item.get('reason')}）"
+                    for item in skipped
+                )
+            )
+
     st.subheader("Seedance 文生视频")
     st.info(
         "每次生成视频会消耗额度，建议每次选取 1~3 个镜头区间，"

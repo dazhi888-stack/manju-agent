@@ -1612,5 +1612,56 @@ class TestRenderTabooString(unittest.TestCase):
         self.assertNotIn("追；问", action_line)
 
 
+class TestComposeHelpers(unittest.TestCase):
+    """成片合成服务的纯逻辑：字幕清洗、时长解析、srt 时间轴。"""
+
+    def test_subtitle_text_strips_quotes_and_truncates(self) -> None:
+        from services.compose import SUBTITLE_MAX_CHARS, _subtitle_text
+
+        self.assertEqual(_subtitle_text({"dialogue": "「师姐的踪迹，断在此处。」"}), "师姐的踪迹，断在此处。")
+        self.assertEqual(_subtitle_text({"dialogue": ""}), "")
+        self.assertEqual(_subtitle_text({}), "")
+        long_line = "长" * 100
+        result = _subtitle_text({"dialogue": long_line})
+        self.assertEqual(len(result), SUBTITLE_MAX_CHARS)
+        self.assertTrue(result.endswith("…"))
+
+    def test_shot_duration_defaults(self) -> None:
+        from services.compose import _shot_duration_seconds
+
+        self.assertEqual(_shot_duration_seconds({"duration_seconds": 6.0}), 6.0)
+        self.assertEqual(_shot_duration_seconds({"duration_seconds": "3"}), 3.0)
+        self.assertEqual(_shot_duration_seconds({}), 4.0)
+        self.assertEqual(_shot_duration_seconds({"duration_seconds": -1}), 4.0)
+        self.assertEqual(_shot_duration_seconds({"duration_seconds": "abc"}), 4.0)
+
+    def test_build_srt_timeline(self) -> None:
+        from services.compose import _build_srt
+
+        report = [
+            {"subtitle": "", "duration": 3.0},
+            {"subtitle": "第一句", "duration": 4.0},
+            {"subtitle": "第二句", "duration": 5.0},
+        ]
+        srt = _build_srt(report)
+        self.assertIn("00:00:03,000 --> 00:00:07,000", srt)
+        self.assertIn("第一句", srt)
+        self.assertIn("00:00:07,000 --> 00:00:12,000", srt)
+        self.assertIn("第二句", srt)
+        # 无字幕的镜头不产生 srt 条目
+        self.assertNotIn("00:00:00,000 -->", srt)
+
+    def test_find_chinese_font_on_windows(self) -> None:
+        from services.compose import _find_chinese_font
+
+        font = _find_chinese_font()
+        # Windows 环境必有中文字体；非 Windows 环境允许为 None
+        import sys
+
+        if sys.platform == "win32":
+            self.assertIsNotNone(font)
+            self.assertTrue(font.lower().endswith((".ttf", ".ttc")))
+
+
 if __name__ == "__main__":
     unittest.main()
