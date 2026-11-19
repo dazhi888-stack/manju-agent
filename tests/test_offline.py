@@ -13,7 +13,10 @@ import uuid
 import shutil
 import asyncio
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
+
+from PIL import Image
 
 # 让 tests/ 目录下也能直接 import 项目模块。
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -1661,6 +1664,109 @@ class TestComposeHelpers(unittest.TestCase):
         if sys.platform == "win32":
             self.assertIsNotNone(font)
             self.assertTrue(font.lower().endswith((".ttf", ".ttc")))
+
+
+class TestImageEditReference(unittest.TestCase):
+    """图生图（角色基准图参考）模式：payload 构造与失败退回。"""
+
+    def _make_ref(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (8, 8), color=(200, 180, 160))
+        image.save(path, format="PNG")
+
+    def test_edit_payload_uses_reference_fields(self) -> None:
+        import config
+        from services import image_gen
+
+        ref = Path("outputs/_test_edit_ref/角色_half.png")
+        self._make_ref(ref)
+        captured: dict[str, Any] = {}
+
+        def fake_post(url, payload, headers):
+            captured["url"] = url
+            captured["payload"] = payload
+            return b"png-bytes", "image/png"
+
+        try:
+            with patch(
+                "services.image_gen._post_json_sync", side_effect=fake_post
+            ):
+                out = asyncio.run(
+                    image_gen.external_image_api(
+                        "提示词", "负面词", "写实", reference_images=[str(ref)]
+                    )
+                )
+            self.assertEqual(out, b"png-bytes")
+            payload = captured["payload"]
+            self.assertEqual(payload["model"], config.IMAGE_EDIT_MODEL)
+            self.assertIn("image", payload)
+            self.assertTrue(
+                str(payload["image"]).startswith("data:image/png;base64,")
+            )
+            self.assertNotIn("image_size", payload)
+            self.assertNotIn("batch_size", payload)
+        finally:
+            shutil.rmtree(ref.parent, ignore_errors=True)
+
+    def test_edit_failure_falls_back_to_text2img(self) -> None:
+        import config
+        from services import image_gen
+
+        ref = Path("outputs/_test_edit_ref2/角色_half.png")
+        self._make_ref(ref)
+        calls: list[dict[str, Any]] = []
+
+        def fake_post(url, payload, headers):
+            calls.append(payload)
+            if len(calls) == 1:
+                raise OSError("edit model unavailable")
+            return b"png-bytes", "image/png"
+
+        try:
+            with patch(
+                "services.image_gen._post_json_sync", side_effect=fake_post
+            ):
+                out = asyncio.run(
+                    image_gen.external_image_api(
+                        "提示词", "负面词", "写实", reference_images=[str(ref)]
+                    )
+                )
+            self.assertEqual(out, b"png-bytes")
+            self.assertEqual(calls[0]["model"], config.IMAGE_EDIT_MODEL)
+            self.assertEqual(calls[1]["model"], config.IMAGE_API_MODEL)
+            self.assertNotIn("image", calls[1])
+            self.assertIn("image_size", calls[1])
+        finally:
+            shutil.rmtree(ref.parent, ignore_errors=True)
+
+    def test_reference_paths_for_orders_and_caps(self) -> None:
+        import config
+        from services import character_reference
+
+        base = Path("outputs/_test_refpaths")
+        half = base / "甲_half.png"
+        full = base / "甲_full.png"
+        missing = base / "乙_half.png"
+        for item in (half, full):
+            self._make_ref(item)
+        refs = [
+            {"name": "甲", "image_role": "full", "image_path": str(full)},
+            {"name": "甲", "image_role": "half", "image_path": str(half)},
+            {"name": "乙", "image_role": "half", "image_path": str(missing)},
+            {"name": "丙", "image_role": "half", "image_path": "Z:/不存在.png"},
+        ]
+        try:
+            with patch(
+                "services.character_reference.get_character_references",
+                return_value=refs,
+            ):
+                paths = character_reference.reference_paths_for(
+                    "story_x", ["甲", "乙"]
+                )
+            # 半身照优先；失效路径被过滤；上限 = IMAGE_EDIT_MAX_REFS
+            self.assertEqual(paths, [str(half), str(full)])
+        finally:
+            shutil.rmtree(base, ignore_errors=True)
 
 
 if __name__ == "__main__":

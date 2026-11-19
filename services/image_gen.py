@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import config
-from services.character_reference import reference_block
+from services.character_reference import reference_block, reference_paths_for
 from services.image_review import expected_characters, review_shot_image
 from services.shot_prompt import parse_storyboard_shots
 from prompts import IMAGE_PROMPT_SYSTEM, build_image_prompt_prompt
@@ -118,6 +118,14 @@ def _post_json_sync(url: str, payload: dict[str, Any], headers: dict[str, str]) 
     return raw, content_type
 
 
+def _encode_reference(path: str) -> str:
+    """角色基准图 -> base64 data URL（硅基流动参考图格式）。"""
+    content = Path(path).read_bytes()
+    suffix = Path(path).suffix.lower().lstrip(".")
+    mime = {"jpg": "jpeg", "jpeg": "jpeg"}.get(suffix, suffix or "png")
+    return f"data:image/{mime};base64,{base64.b64encode(content).decode('ascii')}"
+
+
 async def _download(url: str) -> bytes:
     def _open() -> bytes:
         request = urllib.request.Request(url, headers={"User-Agent": "manju-agent/1.0"})
@@ -133,39 +141,87 @@ async def external_image_api(
     negative_prompt: str,
     style_desc: str,
     image_size: str | None = None,
+    reference_images: list[str] | None = None,
 ) -> bytes:
     """
-    硅基流动文生图接口（异步）。
+    硅基流动生图接口（异步），支持两种模式：
+
+    - 文生图（默认）：IMAGE_API_MODEL（Z-Image-Turbo），prompt 生成整张画面；
+    - 图生图（传 reference_images 时）：IMAGE_EDIT_MODEL（Qwen-Image-Edit-2509），
+      把角色基准图作为参考图真正喂给模型，锁定长相/发型/服装，实现角色一致性。
+      最多 3 张（image / image2 / image3，base64 data URL）。
 
     约定：
     - URL/Key/模型从 IMAGE_API_URL / IMAGE_API_KEY / IMAGE_API_MODEL 读取；
-    - 默认模型 Tongyi-MAI/Z-Image-Turbo；
-    - 提交 JSON：model / prompt / negative_prompt / image_size / batch_size；
     - 兼容 images[0].url、data[0].url / b64_json 或直接二进制图片；
-    - 没配置时抛 ImageApiError，由节点降级为 prompt_only。
+    - 没配置时抛 ImageApiError，由节点降级为 prompt_only；
+    - 图生图请求失败时自动退回纯文生图重试一次，不让一致性功能拖垮出图链路。
     """
     if not config.IMAGE_API_URL or not config.IMAGE_API_KEY:
         raise ImageApiError(
             "未配置 IMAGE_API_URL / IMAGE_API_KEY；本次只生成绘图 prompt。"
         )
 
-    payload = {
-        "model": config.IMAGE_API_MODEL,
-        "prompt": positive_prompt,
-        "negative_prompt": negative_prompt,
-        "image_size": image_size or config.IMAGE_SIZE,
-        "batch_size": 1,
-        # 硅基流动支持该参数：False = 关闭右下角"AI 生成"水印。
-        # 接口如果不认识这个字段会自动忽略，不影响兼容性。
-        "watermark": False,
-    }
+    use_edit = bool(reference_images) and config.IMAGE_EDIT_ENABLED
+
+    def build_payload(with_refs: bool) -> dict[str, Any]:
+        if with_refs:
+            payload: dict[str, Any] = {
+                "model": config.IMAGE_EDIT_MODEL,
+                "prompt": positive_prompt,
+            }
+            if negative_prompt:
+                payload["negative_prompt"] = negative_prompt
+            for index, path in enumerate(
+                list(reference_images or [])[: config.IMAGE_EDIT_MAX_REFS]
+            ):
+                payload["image" if index == 0 else f"image{index + 1}"] = (
+                    _encode_reference(path)
+                )
+            return payload
+        return {
+            "model": config.IMAGE_API_MODEL,
+            "prompt": positive_prompt,
+            "negative_prompt": negative_prompt,
+            "image_size": image_size or config.IMAGE_SIZE,
+            "batch_size": 1,
+            # 硅基流动支持该参数：False = 关闭右下角"AI 生成"水印。
+            # 接口如果不认识这个字段会自动忽略，不影响兼容性。
+            "watermark": False,
+        }
+
     headers = {"Authorization": f"Bearer {config.IMAGE_API_KEY}"}
-    raw, content_type = await asyncio.to_thread(
-        _post_json_sync,
-        config.IMAGE_API_URL,
-        payload,
-        headers,
-    )
+    payload = build_payload(use_edit)
+    if use_edit:
+        print(
+            f"[文生图] 图生图模式：附带 {min(len(reference_images or []), config.IMAGE_EDIT_MAX_REFS)}"
+            f" 张角色参考图（{config.IMAGE_EDIT_MODEL}）",
+            flush=True,
+        )
+    try:
+        raw, content_type = await asyncio.to_thread(
+            _post_json_sync,
+            config.IMAGE_API_URL,
+            payload,
+            headers,
+        )
+    except ImageApiError:
+        raise
+    except Exception as exc:
+        if not use_edit:
+            raise
+        # 参考图模式失败（模型未开通/限流/网络）：退回纯文生图再试一次。
+        print(
+            f"[文生图警告] 图生图（参考图）请求失败：{exc}；退回纯文生图重试。",
+            flush=True,
+        )
+        payload = build_payload(False)
+        raw, content_type = await asyncio.to_thread(
+            _post_json_sync,
+            config.IMAGE_API_URL,
+            payload,
+            headers,
+        )
 
     if "image/" in content_type or not content_type:
         return raw
@@ -320,6 +376,9 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
     ref_block = reference_block(story_id, names=cast_names) if cast_names else ""
     if ref_block:
         positive = ref_block + "\n" + positive
+    # 真正的角色一致性：把本镜头出场角色的已确认基准图作为参考图传给生图模型
+    # （图生图模式）；没有基准图时 ref_paths 为空，走纯文生图。
+    ref_paths = reference_paths_for(story_id, cast_names) if cast_names else []
     status = "prompt_only"
     image_path = ""
     image_error = ""
@@ -337,7 +396,13 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         attempts = max_retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                content = await external_image_api(positive, negative, style)
+                if ref_paths and config.IMAGE_EDIT_ENABLED:
+                    # 图生图：基准图作为参考图传入，锁定角色长相。
+                    content = await external_image_api(
+                        positive, negative, style, reference_images=ref_paths
+                    )
+                else:
+                    content = await external_image_api(positive, negative, style)
                 path = _save_image(story_id, episode_no, style, content, shot_no, pending)
                 print(f"[文生图] 图片已保存：{path}", flush=True)
 
@@ -403,6 +468,7 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
                     await asyncio.sleep(min(2 ** (attempt - 1), 4))
 
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+    used_edit = bool(ref_paths) and config.IMAGE_EDIT_ENABLED
     record = {
         "story_id": story_id,
         "episode_no": episode_no,
@@ -416,6 +482,8 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         "review_issues": list(review.get("issues") or []),
         "error": image_error,
         "elapsed_ms": elapsed_ms,
+        "image_model": config.IMAGE_EDIT_MODEL if used_edit else config.IMAGE_API_MODEL,
+        "reference_images": [Path(p).name for p in ref_paths] if used_edit else [],
     }
     print(f"[文生图] 状态={status}｜耗时={elapsed_ms}ms", flush=True)
     print(positive, flush=True)
@@ -440,7 +508,10 @@ async def image_gen_node(state: ComicState) -> dict[str, Any]:
         "trace": [
             f"文生图：剧本 {len(str(state.get('script') or ''))} 字，"
             f"分镜 {len(storyboard)} 字，镜头={f'#{shot_no}' if shot_no else '整集'}，"
-            f"画风={style}，prompt {len(positive)} 字，路径={image_path or '-'}，"
+            f"画风={style}，prompt {len(positive)} 字，"
+            f"参考图 {len(ref_paths) if used_edit else 0} 张"
+            f"（{'图生图 ' + config.IMAGE_EDIT_MODEL if used_edit else config.IMAGE_API_MODEL}），"
+            f"路径={image_path or '-'}，"
             f"状态={status}，重绘 {retry_count} 次，耗时 {elapsed_ms}ms"
         ],
     }

@@ -130,6 +130,14 @@ IMAGE_API_KEY = (
 IMAGE_API_MODEL = (
     os.getenv("IMAGE_API_MODEL") or "Tongyi-MAI/Z-Image-Turbo"
 ).strip()
+# 角色一致性（图生图）：镜头有已确认的基准图时，把基准图作为参考图传入生图模型。
+# 硅基流动 Qwen-Image-Edit-2509 走同一条 /v1/images/generations，
+# 用 image / image2 / image3 字段最多带 3 张参考图（base64 data URL）。
+IMAGE_EDIT_MODEL = (
+    os.getenv("IMAGE_EDIT_MODEL") or "Qwen/Qwen-Image-Edit-2509"
+).strip()
+IMAGE_EDIT_ENABLED = _env_bool("IMAGE_EDIT_ENABLED", True)
+IMAGE_EDIT_MAX_REFS = _env_int("IMAGE_EDIT_MAX_REFS", 3)
 IMAGE_SIZE = (os.getenv("IMAGE_SIZE") or "1920x1080").strip()
 # 默认不调用 DeepSeek 生成绘图 prompt；需要 LLM 扩写时设 1。
 IMAGE_PROMPT_USE_LLM = _env_bool("IMAGE_PROMPT_USE_LLM", False)

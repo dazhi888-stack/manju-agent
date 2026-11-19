@@ -269,6 +269,44 @@ def reference_images(story_id: str) -> list[str]:
     ]
 
 
+def reference_paths_for(
+    story_id: str, names: list[str] | None = None
+) -> list[str]:
+    """
+    按镜头出场名单取角色基准图路径，供图生图（参考图模式）使用。
+
+    规则：
+    - names 顺序 = 出场顺序；每个角色优先取半身照（五官最清晰），再补全身照；
+    - 文件已不存在的基准图直接跳过（向量库里可能有失效记录）；
+    - 最多取 config.IMAGE_EDIT_MAX_REFS 张（接口限制 3 张）。
+    """
+    refs = get_character_references(story_id)
+    if names is not None:
+        allowed = [str(n) for n in names if str(n).strip()]
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        for ref in refs:
+            name = str(ref.get("name") or "")
+            if name in allowed:
+                by_name.setdefault(name, []).append(ref)
+        ordered: list[dict[str, Any]] = []
+        for name in allowed:  # 按出场顺序排列参考图
+            items = by_name.get(name, [])
+            ordered.extend(
+                [i for i in items if i.get("image_role") == "half"]
+                + [i for i in items if i.get("image_role") != "half"]
+            )
+    else:
+        ordered = list(refs)
+    paths: list[str] = []
+    for ref in ordered:
+        path = str(ref.get("image_path") or "")
+        if path and Path(path).exists() and path not in paths:
+            paths.append(path)
+        if len(paths) >= config.IMAGE_EDIT_MAX_REFS:
+            break
+    return paths
+
+
 def image_similarity(story_id: str, image_path: str) -> dict[str, Any]:
     """返回新图与库内基准图的最佳相似度。"""
     collection = _collection()
