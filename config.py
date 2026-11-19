@@ -161,7 +161,7 @@ MAX_REVISIONS = _env_int("MAX_REVISIONS", 2)
 
 # 单次 LLM 最大输出 token。剧本/分镜是结构化 JSON，给足空间防止被截断。
 MAX_TOKENS = _env_int("MAX_TOKENS", 8_192)
-LLM_TIMEOUT_SECONDS = _env_float("LLM_TIMEOUT_SECONDS", 120.0)
+LLM_TIMEOUT_SECONDS = _env_float("LLM_TIMEOUT_SECONDS", 300.0)
 LLM_MAX_RETRIES = _env_int("LLM_MAX_RETRIES", 2)
 
 # deepseek-v4-flash 支持关闭 thinking，能减少无用的推理输出。
