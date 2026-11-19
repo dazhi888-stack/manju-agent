@@ -372,10 +372,25 @@ async def new_script(req: NewScriptRequest) -> dict[str, Any]:
     if not story_id:
         raise HTTPException(status_code=422, detail="story_id 不能为空")
     if _story_exists(story_id):
-        raise HTTPException(
-            status_code=409,
-            detail="该story_id已存在，请更换新ID，或者确认是否要清空旧剧本记忆",
-        )
+        # 区分「完整旧剧本」与「上次失败的残留」：
+        # 只有全局档案、无向量记忆、无输出目录 → 说明上次跑到一半失败，
+        # 自动清掉残留档案后放行，避免该 story_id 从此无法再用。
+        has_memory = story_id in get_story_memory().list_story_ids()
+        has_output = (config.OUTPUT_DIR / story_id).exists()
+        if not has_memory and not has_output:
+            try:
+                profile_path(story_id).unlink(missing_ok=True)
+                print(f"[清理] story_id={story_id} 仅存失败残留的全局档案，已清除后放行", flush=True)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"story_id={story_id} 存在失败残留，但自动清理失败：{exc}",
+                )
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail="该story_id已存在，请更换新ID，或者确认是否要清空旧剧本记忆",
+            )
     thread_id = uuid.uuid4().hex
     initial = _base_initial(req.text, story_id, req.style_desc)
     if req.max_revisions is not None:
