@@ -1,7 +1,7 @@
 # AI 漫剧 Agent
 
 > 小说/剧本 → 漫剧剧本 → 6 列分镜 → 分镜 OOC 校验 → 视频提示词 → 持久化  
-> 基于 **LangGraph + Chroma + FastAPI + Streamlit** 的多集连续生成 Demo。
+> 基于 **LangGraph + Chroma + FastAPI + Streamlit + Langsmith** 的多集连续生成 Demo。
 
 ---
 
