@@ -52,7 +52,7 @@
 
 - Python 3.13
 - LangGraph 1.1.2
-- LangChain 1.2.x
+- Langsmith
 - Chroma 1.5.x
 - FastAPI + Uvicorn
 - Streamlit
