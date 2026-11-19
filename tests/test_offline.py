@@ -1517,5 +1517,100 @@ class TestBranchRender(unittest.TestCase):
         self.assertIn("1 / 2", markdown)
 
 
+class TestQwenRetryThenDeepseek(unittest.TestCase):
+    """Qwen 瞬时失败（超时/5xx）先重试 2 次，仍失败切 DeepSeek 兜底。"""
+
+    def test_timeout_retries_twice_then_deepseek(self) -> None:
+        import nodes
+        from pydantic import BaseModel
+
+        class Tiny(BaseModel):
+            answer: str
+
+        class FakeStructured:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+
+            def invoke(self, messages):
+                if self.fail:
+                    raise RuntimeError("APITimeoutError: Request timed out.")
+                return {
+                    "parsed": Tiny(answer="ok"),
+                    "raw": None,
+                    "parsing_error": None,
+                }
+
+        class FakeLlm:
+            def __init__(self, fail: bool) -> None:
+                self.fail = fail
+
+            def with_structured_output(self, schema, include_raw=True):
+                return FakeStructured(self.fail)
+
+        calls: list[str] = []
+        config_mod = __import__("config")
+
+        def fake_get_script_llm(temperature, model=None, max_retries=None):
+            calls.append(model or "free")
+            return FakeLlm(fail=True)
+
+        def fake_get_llm(temperature):
+            calls.append(config_mod.MODEL_NAME)
+            return FakeLlm(fail=False)
+
+        with patch(
+            "nodes.shared.config.get_script_llm", side_effect=fake_get_script_llm
+        ), patch("nodes.shared.config.get_llm", side_effect=fake_get_llm):
+            result = nodes.invoke_structured(
+                node_name="测试节点",
+                schema=Tiny,
+                system_prompt="固定 system",
+                user_prompt="动态 user",
+                temperature=0.0,
+                use_script_llm=True,
+            )
+
+        self.assertEqual(result.answer, "ok")
+        # Qwen 对象只在开头创建 1 次（重试复用），失败 3 次后切 DeepSeek 再建 1 次。
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], config_mod.SCRIPT_MODEL_FREE)
+        self.assertEqual(calls[-1], config_mod.MODEL_NAME)
+
+
+class TestRenderTabooString(unittest.TestCase):
+    """taboos/key_actions 是字符串时不得被逐字拆开。"""
+
+    def test_plot_summary_taboos_string_not_split(self) -> None:
+        plot = {
+            "title": "测",
+            "characters": [
+                {
+                    "name": "周闻",
+                    "role": "主角",
+                    "personality": "圆滑",
+                    "appearance": "清瘦",
+                    "relationships": "上司",
+                    "key_actions": "追问九百万亏空",
+                }
+            ],
+        }
+        canon = [
+            {
+                "name": "周闻",
+                "match_type": "profile",
+                "personality": "圆滑",
+                "speech_style": "笑着说话",
+                "taboos": "不得写成热情健谈；不得使用现代口语。",
+            }
+        ]
+        text = render_plot_summary(plot, canon_profiles=canon)
+        taboo_line = next(line for line in text.splitlines() if "设定禁忌" in line)
+        self.assertIn("不得写成热情健谈；不得使用现代口语。", taboo_line)
+        self.assertNotIn("；不；", taboo_line)
+        action_line = next(line for line in text.splitlines() if "关键动作" in line)
+        self.assertIn("追问九百万亏空", action_line)
+        self.assertNotIn("追；问", action_line)
+
+
 if __name__ == "__main__":
     unittest.main()

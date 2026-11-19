@@ -111,7 +111,12 @@ def render_plot_summary(
         lines.append(f"  - 关系：{character.get('relationships', '原文未说明')}")
         actions = character.get("key_actions") or []
         if actions:
-            lines.append(f"  - 关键动作：{'；'.join(str(item) for item in actions)}")
+            # 与 taboos 同理：字符串直接用，列表逐项分号连接。
+            if isinstance(actions, str):
+                actions_text = actions.strip()
+            else:
+                actions_text = "；".join(str(item) for item in actions)
+            lines.append(f"  - 关键动作：{actions_text}")
 
         card = _find_canon(character, canon_profiles)
         if card:
@@ -125,7 +130,13 @@ def render_plot_summary(
                 lines.append(f"    - 设定说话风格：{card.get('speech_style')}")
             taboos = card.get("taboos") or []
             if taboos:
-                lines.append(f"    - 设定禁忌：{'；'.join(str(item) for item in taboos)}")
+                # taboos 兼容两种来源：字符串（Chroma 人物卡）直接用，
+                # 列表（demo 数据）逐项用分号连接，避免把字符串逐字拆开。
+                if isinstance(taboos, str):
+                    taboo_text = taboos.strip()
+                else:
+                    taboo_text = "；".join(str(item) for item in taboos)
+                lines.append(f"    - 设定禁忌：{taboo_text}")
         else:
             lines.append("  - 设定库：未命中，按原文推断")
     lines.append("")

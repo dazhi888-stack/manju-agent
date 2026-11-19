@@ -132,7 +132,8 @@ def invoke_structured(
     调用 LLM，并强制返回指定 Pydantic 结构。
 
     - system_prompt 必须是固定前缀，动态摘要/用户输入全部在 user_prompt；
-    - 剧本初稿 use_script_llm=True：硅基流动 Qwen，429 自动切兜底；
+    - 剧本初稿 use_script_llm=True：硅基流动 Qwen，429 切 Pro；
+      超时/5xx 等瞬时错误原模型重试 2 次，仍失败自动切 DeepSeek 兜底；
     - 校验失败后的修复轮 use_script_llm=False：切回 DeepSeek 做实质性修改；
     - 结构化解析失败最多重试一次，仍失败抛 NodeError。
     """
@@ -151,65 +152,104 @@ def invoke_structured(
     ]
 
     last_error: Any = None
+    qwen_failures = 0
+    QWEN_RETRY_LIMIT = 2  # Qwen 调用失败（超时/5xx 等）最多重试次数，用尽后切 DeepSeek
+
     for attempt in range(1, 3):
         print(
             f"[LLM] {node_name} 第{attempt}次结构化调用...｜模型={current_model}",
             flush=True,
         )
         started = time.perf_counter()
-        try:
-            result = structured_llm.invoke(messages)
-        except Exception as exc:
-            if use_script_llm and not used_script_pro and _is_script_balance_error(exc):
-                # 脚本模型余额不足/欠费：不阻塞新剧本，直接切 DeepSeek。
-                print(
-                    f"[LLM] 脚本模型 {current_model} 余额/鉴权异常，"
-                    f"自动切换 DeepSeek：{config.MODEL_NAME}",
-                    flush=True,
-                )
-                used_script_pro = True
-                current_model = config.MODEL_NAME
-                try:
-                    llm = config.get_llm(temperature)
-                    structured_llm = llm.with_structured_output(
-                        schema, include_raw=True
+        # 内层 while：Qwen 瞬时失败的同请求重试，不消耗外层结构化解析重试次数。
+        while True:
+            try:
+                result = structured_llm.invoke(messages)
+                break
+            except Exception as exc:
+                if use_script_llm and not used_script_pro and _is_script_balance_error(exc):
+                    # 脚本模型余额不足/欠费：不阻塞新剧本，直接切 DeepSeek。
+                    print(
+                        f"[LLM] 脚本模型 {current_model} 余额/鉴权异常，"
+                        f"自动切换 DeepSeek：{config.MODEL_NAME}",
+                        flush=True,
                     )
-                    result = structured_llm.invoke(messages)
-                except Exception as fallback_exc:
+                    used_script_pro = True
+                    current_model = config.MODEL_NAME
+                    try:
+                        llm = config.get_llm(temperature)
+                        structured_llm = llm.with_structured_output(
+                            schema, include_raw=True
+                        )
+                        result = structured_llm.invoke(messages)
+                        break
+                    except Exception as fallback_exc:
+                        raise NodeError(
+                            node_name,
+                            f"DeepSeek 兜底调用失败：{type(fallback_exc).__name__}: {fallback_exc}",
+                        ) from fallback_exc
+                elif use_script_llm and not used_script_pro and _is_rate_limit_error(exc):
+                    # 免费 Qwen 429：同一请求立即切 Pro 版。
+                    print(
+                        f"[LLM] 免费模型 {current_model} 触发 429，"
+                        f"自动切换 Pro 模型 {config.SCRIPT_MODEL_PRO}",
+                        flush=True,
+                    )
+                    used_script_pro = True
+                    current_model = config.SCRIPT_MODEL_PRO
+                    try:
+                        llm = config.get_script_llm(
+                            temperature,
+                            model=current_model,
+                            max_retries=config.LLM_MAX_RETRIES,
+                        )
+                        structured_llm = llm.with_structured_output(
+                            schema, include_raw=True
+                        )
+                        result = structured_llm.invoke(messages)
+                        break
+                    except Exception as pro_exc:
+                        raise NodeError(
+                            node_name,
+                            f"Qwen Pro 兜底调用失败：{type(pro_exc).__name__}: {pro_exc}",
+                        ) from pro_exc
+                elif use_script_llm and not used_script_pro and qwen_failures < QWEN_RETRY_LIMIT:
+                    # 超时/5xx/网络抖动等瞬时错误：先原模型重试，最多 2 次。
+                    qwen_failures += 1
+                    print(
+                        f"[LLM] {current_model} 调用失败"
+                        f"（{type(exc).__name__}: {str(exc)[:150]}），"
+                        f"重试 {qwen_failures}/{QWEN_RETRY_LIMIT}...",
+                        flush=True,
+                    )
+                    continue
+                elif use_script_llm and not used_script_pro:
+                    # Qwen 重试次数用尽仍失败：切 DeepSeek 兜底，不再回头。
+                    print(
+                        f"[LLM] {current_model} 重试 {QWEN_RETRY_LIMIT} 次仍失败，"
+                        f"自动切换 DeepSeek：{config.MODEL_NAME}",
+                        flush=True,
+                    )
+                    used_script_pro = True
+                    current_model = config.MODEL_NAME
+                    try:
+                        llm = config.get_llm(temperature)
+                        structured_llm = llm.with_structured_output(
+                            schema, include_raw=True
+                        )
+                        result = structured_llm.invoke(messages)
+                        break
+                    except Exception as fallback_exc:
+                        raise NodeError(
+                            node_name,
+                            f"DeepSeek 兜底调用失败：{type(fallback_exc).__name__}: {fallback_exc}",
+                        ) from fallback_exc
+                else:
+                    # 网络/鉴权/参数错误通常重试也没用，直接包装成节点错误。
                     raise NodeError(
                         node_name,
-                        f"DeepSeek 兜底调用失败：{type(fallback_exc).__name__}: {fallback_exc}",
-                    ) from fallback_exc
-            elif use_script_llm and not used_script_pro and _is_rate_limit_error(exc):
-                # 免费 Qwen 429：同一请求立即切 Pro 版，不消耗结构化重试次数。
-                print(
-                    f"[LLM] 免费模型 {current_model} 触发 429，"
-                    f"自动切换 Pro 模型 {config.SCRIPT_MODEL_PRO}",
-                    flush=True,
-                )
-                used_script_pro = True
-                current_model = config.SCRIPT_MODEL_PRO
-                try:
-                    llm = config.get_script_llm(
-                        temperature,
-                        model=current_model,
-                        max_retries=config.LLM_MAX_RETRIES,
-                    )
-                    structured_llm = llm.with_structured_output(
-                        schema, include_raw=True
-                    )
-                    result = structured_llm.invoke(messages)
-                except Exception as pro_exc:
-                    raise NodeError(
-                        node_name,
-                        f"Qwen Pro 兜底调用失败：{type(pro_exc).__name__}: {pro_exc}",
-                    ) from pro_exc
-            else:
-                # 网络/鉴权/参数错误通常重试也没用，直接包装成节点错误。
-                raise NodeError(
-                    node_name,
-                    f"LLM 调用失败：{type(exc).__name__}: {exc}",
-                ) from exc
+                        f"LLM 调用失败：{type(exc).__name__}: {exc}",
+                    ) from exc
 
         elapsed = time.perf_counter() - started
 
