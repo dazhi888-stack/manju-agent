@@ -4,16 +4,24 @@ rem 双击运行：自动创建虚拟环境、安装依赖、启动前后端
 chcp 65001 >nul
 cd /d "%~dp0"
 
-where python >nul 2>nul
+set "PYEXE=python"
+python --version >nul 2>nul
 if errorlevel 1 (
-    echo [启动失败] 未检测到 Python，请先安装 Python 3.10+ 并勾选 "Add to PATH"
+    set "PYEXE=py -3"
+    py -3 --version >nul 2>nul
+)
+%PYEXE% --version >nul 2>nul
+if errorlevel 1 (
+    echo [启动失败] 未检测到可用的 Python，请先安装 Python 3.10+ 并勾选 "Add to PATH"
+    echo [提示] 安装时可勾选 py launcher；安装完成后重新双击本文件
     pause
     exit /b 1
 )
+echo [环境] 使用 Python: %PYEXE%
 
 if not exist ".venv\Scripts\python.exe" (
     echo [初始化] 首次运行，创建虚拟环境...
-    python -m venv .venv
+    %PYEXE% -m venv .venv
     if errorlevel 1 (
         echo [启动失败] 虚拟环境创建失败
         pause
