@@ -30,11 +30,19 @@ if not exist ".venv\Scripts\python.exe" (
 
 if not exist ".env" (
     if exist ".env.example" (
-        echo [提示] 未找到 .env，已从 .env.example 复制一份，请填入你自己的 API Key 后重新运行
+        echo [提示] 未找到 .env，已从 .env.example 复制一份
+        echo [提示] 请在弹出的记事本里填入你的 API Key，保存并关闭记事本后按任意键继续启动
         copy .env.example .env >nul
         notepad .env
-        pause
-        exit /b 0
+        echo [检查] 正在确认 .env 是否已填写...
+        findstr /r "^DEEPSEEK_API_KEY=sk-." .env >nul
+        if errorlevel 1 (
+            echo [启动失败] .env 中还没有有效的 DEEPSEEK_API_KEY（应以 DEEPSEEK_API_KEY=sk- 开头），请重新运行并填写
+            notepad .env
+            pause
+            exit /b 1
+        )
+        echo [检查] .env 已填写，继续启动...
     )
 )
 
