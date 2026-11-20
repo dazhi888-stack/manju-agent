@@ -75,6 +75,27 @@ def load_global_profile(story_id: str) -> dict[str, Any] | None:
     return sanitize_profile(read_json(profile_path(story_id), default=None))
 
 
+def remove_character_from_profile(story_id: str, name: str) -> bool:
+    """从全局角色档案 JSON 中删除指定姓名的角色卡；返回是否删除。"""
+    name = str(name or "").strip()
+    if not name:
+        return False
+    profile = load_global_profile(story_id)
+    if not profile:
+        return False
+    characters = profile.get("characters") or []
+    kept = [
+        card
+        for card in characters
+        if str(card.get("name") or "").strip() != name
+    ]
+    if len(kept) == len(characters):
+        return False
+    profile["characters"] = kept
+    write_json(profile_path(story_id), profile)
+    return True
+
+
 def global_profile_cards(profile: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not profile:
         return []

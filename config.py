@@ -138,6 +138,11 @@ IMAGE_EDIT_MODEL = (
 ).strip()
 IMAGE_EDIT_ENABLED = _env_bool("IMAGE_EDIT_ENABLED", True)
 IMAGE_EDIT_MAX_REFS = _env_int("IMAGE_EDIT_MAX_REFS", 3)
+# 角色基准图专用模型/尺寸：Qwen-Image 人像质量明显高于 Z-Image-Turbo（¥0.30/张 vs ¥0.10/张）。
+# 基准图每个角色只有一两张，烧得起；分镜图仍走 IMAGE_API_MODEL，不受影响。
+# Qwen-Image 推荐尺寸：1328x1328 / 1664x928 / 928x1664 / 1472x1140 / 1140x1472。
+IMAGE_REF_MODEL = (os.getenv("IMAGE_REF_MODEL") or "Qwen/Qwen-Image").strip()
+IMAGE_REF_SIZE = (os.getenv("IMAGE_REF_SIZE") or "928x1664").strip()
 IMAGE_SIZE = (os.getenv("IMAGE_SIZE") or "1920x1080").strip()
 # 默认不调用 DeepSeek 生成绘图 prompt；需要 LLM 扩写时设 1。
 IMAGE_PROMPT_USE_LLM = _env_bool("IMAGE_PROMPT_USE_LLM", False)

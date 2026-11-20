@@ -142,14 +142,17 @@ async def external_image_api(
     style_desc: str,
     image_size: str | None = None,
     reference_images: list[str] | None = None,
+    model_override: str = "",
 ) -> bytes:
     """
-    硅基流动生图接口（异步），支持两种模式：
+    硅基流动生图接口（异步），支持三种用法：
 
     - 文生图（默认）：IMAGE_API_MODEL（Z-Image-Turbo），prompt 生成整张画面；
     - 图生图（传 reference_images 时）：IMAGE_EDIT_MODEL（Qwen-Image-Edit-2509），
       把角色基准图作为参考图真正喂给模型，锁定长相/发型/服装，实现角色一致性。
-      最多 3 张（image / image2 / image3，base64 data URL）。
+      最多 3 张（image / image2 / image3，base64 data URL）；
+    - model_override：指定其他模型（如基准图用 Qwen/Qwen-Image），
+      此时用最小 payload，只发 model/prompt/negative_prompt/image_size。
 
     约定：
     - URL/Key/模型从 IMAGE_API_URL / IMAGE_API_KEY / IMAGE_API_MODEL 读取；
@@ -179,16 +182,20 @@ async def external_image_api(
                     _encode_reference(path)
                 )
             return payload
-        return {
-            "model": config.IMAGE_API_MODEL,
+        model_name = str(model_override or "").strip() or config.IMAGE_API_MODEL
+        payload = {
+            "model": model_name,
             "prompt": positive_prompt,
             "negative_prompt": negative_prompt,
             "image_size": image_size or config.IMAGE_SIZE,
-            "batch_size": 1,
+        }
+        if not model_override:
+            # 默认 Turbo 路径保留这些字段；覆盖模型时不发，避免字段不兼容被拒。
+            payload["batch_size"] = 1
             # 硅基流动支持该参数：False = 关闭右下角"AI 生成"水印。
             # 接口如果不认识这个字段会自动忽略，不影响兼容性。
-            "watermark": False,
-        }
+            payload["watermark"] = False
+        return payload
 
     headers = {"Authorization": f"Bearer {config.IMAGE_API_KEY}"}
     payload = build_payload(use_edit)

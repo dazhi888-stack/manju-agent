@@ -269,6 +269,59 @@ def reference_images(story_id: str) -> list[str]:
     ]
 
 
+def delete_character_reference(story_id: str, name: str) -> dict[str, Any]:
+    """
+    删除一个角色的全部基准图：Chroma 记录 + 本地图片文件。
+
+    只清理基准图层，不动全局档案 JSON 里的角色卡文本（那是另一层，
+    由 api 层按 include_profile 参数决定是否一并删除）。
+    """
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("角色名不能为空。")
+    collection = _collection()
+    result = collection.get(
+        where={
+            "$and": [
+                {"type": "character"},
+                {"script_id": story_id},
+                {"name": name},
+            ]
+        },
+        include=["metadatas"],
+    )
+    ids = list(result.get("ids") or [])
+    paths: set[str] = set()
+    for metadata in result.get("metadatas") or []:
+        path = str((metadata or {}).get("image_path") or "")
+        if path:
+            paths.add(path)
+    if ids:
+        collection.delete(ids=ids)
+
+    # 本地图片文件：优先按向量库记录的路径删，再兜底按命名规则扫一遍。
+    removed_files: list[str] = []
+    for raw in paths:
+        file = Path(raw)
+        if file.exists():
+            try:
+                file.unlink()
+                removed_files.append(file.name)
+            except OSError:
+                pass
+    directory = config.OUTPUT_DIR / story_id / "characters"
+    if directory.exists():
+        safe_name = "".join(ch for ch in name if ch not in '\\/:*?"<>|') or "character"
+        for file in directory.glob(f"{safe_name}_*.png"):
+            if file.name not in removed_files:
+                try:
+                    file.unlink()
+                    removed_files.append(file.name)
+                except OSError:
+                    pass
+    return {"removed_ids": ids, "removed_files": removed_files}
+
+
 def reference_paths_for(
     story_id: str, names: list[str] | None = None
 ) -> list[str]:

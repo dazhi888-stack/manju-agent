@@ -1769,5 +1769,99 @@ class TestImageEditReference(unittest.TestCase):
             shutil.rmtree(base, ignore_errors=True)
 
 
+class TestCharacterDeletion(unittest.TestCase):
+    """角色删除交互：档案 JSON / story_memory 角色卡 / 基准图三处清理。"""
+
+    def test_remove_character_from_profile(self) -> None:
+        import json as _json
+
+        import config
+        from stores.global_profile import (
+            profile_path,
+            remove_character_from_profile,
+        )
+        from stores.json_store import write_json
+
+        tmp = Path("data/_test_del_profile")
+        old_data = config.DATA_DIR
+        config.DATA_DIR = tmp
+        write_json(
+            profile_path("s_del"),
+            {
+                "story_id": "s_del",
+                "characters": [
+                    {"name": "林昭", "role": "主角"},
+                    {"name": "苏晚", "role": "配角"},
+                ],
+            },
+        )
+        try:
+            self.assertTrue(remove_character_from_profile("s_del", "林昭"))
+            raw = _json.loads(profile_path("s_del").read_text(encoding="utf-8"))
+            names = [c.get("name") for c in raw.get("characters") or []]
+            self.assertEqual(names, ["苏晚"])
+            # 再删一次：角色已不存在，返回 False
+            self.assertFalse(remove_character_from_profile("s_del", "林昭"))
+        finally:
+            config.DATA_DIR = old_data
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_delete_role_from_story_memory(self) -> None:
+        from stores.vector_store import StoryMemoryStore
+
+        store = StoryMemoryStore(in_memory=True)
+        store.upsert_role("s_del2", {"name": "林昭", "role": "主角"})
+        self.assertEqual(len(store.get_roles("s_del2")), 1)
+        self.assertTrue(store.delete_role("s_del2", "林昭"))
+        self.assertEqual(len(store.get_roles("s_del2")), 0)
+        # 不存在的角色：返回 False，不抛异常
+        self.assertFalse(store.delete_role("s_del2", "林昭"))
+
+    def test_delete_character_reference_files_and_ids(self) -> None:
+        import config
+        from services import character_reference
+
+        base = Path("outputs/_test_del_ref")
+        char_dir = base / "s_del3" / "characters"
+        char_dir.mkdir(parents=True, exist_ok=True)
+        half = char_dir / "林昭_half.png"
+        full = char_dir / "林昭_full.png"
+        Image.new("RGB", (4, 4)).save(half, format="PNG")
+        Image.new("RGB", (4, 4)).save(full, format="PNG")
+
+        captured: dict[str, Any] = {}
+
+        class FakeCollection:
+            def get(self, where=None, include=None):
+                captured["where"] = where
+                return {
+                    "ids": ["s_del3::林昭::half"],
+                    "metadatas": [
+                        {"image_path": str(half)},
+                    ],
+                }
+
+            def delete(self, ids):
+                captured["deleted"] = list(ids)
+
+        old_output = config.OUTPUT_DIR
+        config.OUTPUT_DIR = base
+        try:
+            with patch.object(
+                character_reference, "_collection", return_value=FakeCollection()
+            ):
+                result = character_reference.delete_character_reference(
+                    "s_del3", "林昭"
+                )
+            self.assertEqual(captured["deleted"], ["s_del3::林昭::half"])
+            self.assertFalse(half.exists())
+            self.assertFalse(full.exists())
+            self.assertIn("林昭_half.png", result["removed_files"])
+            self.assertIn("林昭_full.png", result["removed_files"])
+        finally:
+            config.OUTPUT_DIR = old_output
+            shutil.rmtree(base, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

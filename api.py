@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 import config
 from services.character_reference import (
     character_prompts,
+    delete_character_reference,
     get_character_references,
     profile_from_card,
     reference_block as character_reference_block,
@@ -34,7 +35,12 @@ from services.character_reference import (
     save_reference_image,
 )
 from graph import graph
-from stores.global_profile import global_profile_cards, load_global_profile, profile_path
+from stores.global_profile import (
+    global_profile_cards,
+    load_global_profile,
+    profile_path,
+    remove_character_from_profile,
+)
 from services.image_gen import ImageApiError, external_image_api, image_gen_node
 from services.image_manifest import bind_shot, entries_for_episode, load_manifest, unbind_file
 from services.compose import DEFAULT_VOICE as COMPOSE_DEFAULT_VOICE, compose_episode
@@ -182,6 +188,14 @@ class CharacterConfirmRequest(BaseModel):
     image_paths: list[str] = Field(min_length=1)
     style_desc: str = ""
     appearance_override: str = ""
+
+
+class CharacterDeleteRequest(BaseModel):
+    story_id: str = "demo_story"
+    character_name: str
+    # False 只删基准图（Chroma 记录 + 本地图片）；True 连角色卡文本一起删
+    # （全局档案 JSON + story_memory 角色向量），删完角色从角色库消失。
+    include_profile: bool = False
 
 
 # ===========================================================================
@@ -607,7 +621,9 @@ async def generate_character_reference(req: CharacterGenerateRequest) -> dict[st
                     + "，裸露，半裸，赤裸，无衣物，双人，多人，拼图，多视图，"
                     "三视图，角色设定图，转身图，背面图，重复人物",
                     req.style_desc or config.DEFAULT_STYLE_DESC,
-                    image_size="1080x1920",
+                    # 基准图走更高质量的 Qwen-Image（人像明显好于 Turbo）。
+                    image_size=config.IMAGE_REF_SIZE,
+                    model_override=config.IMAGE_REF_MODEL,
                 )
                 break
             except HTTPError as exc:
@@ -679,6 +695,49 @@ async def confirm_character_reference(req: CharacterConfirmRequest) -> dict[str,
         "profile": base.model_dump(),
         "stored": stored,
     }
+
+
+@app.post("/api/characters/delete")
+async def delete_character(req: CharacterDeleteRequest) -> dict[str, Any]:
+    """
+    删除角色：
+    - include_profile=False（默认）：只删基准图层（Chroma 向量记录 + 本地图片），
+      角色卡文本保留，可直接重新生成基准图；
+    - include_profile=True：连角色卡一起删（全局档案 JSON + story_memory 角色向量），
+      角色从角色库彻底消失，不可恢复。
+    """
+    story_id = req.story_id.strip()
+    name = req.character_name.strip()
+    if not story_id or not name:
+        raise HTTPException(status_code=422, detail="story_id 和 character_name 不能为空。")
+    try:
+        removed_refs = delete_character_reference(story_id, name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"删除基准图失败：{type(exc).__name__}: {exc}",
+        )
+    result: dict[str, Any] = {
+        "story_id": story_id,
+        "character_name": name,
+        "removed_reference_ids": removed_refs.get("removed_ids") or [],
+        "removed_files": removed_refs.get("removed_files") or [],
+        "profile_removed": False,
+        "role_card_removed": False,
+    }
+    if req.include_profile:
+        result["profile_removed"] = remove_character_from_profile(story_id, name)
+        try:
+            result["role_card_removed"] = get_story_memory().delete_role(story_id, name)
+        except Exception as exc:
+            print(f"[角色删除] story_memory 角色卡删除失败：{exc}", flush=True)
+    print(
+        f"[角色删除] {story_id}/{name}：基准图 {len(result['removed_files'])} 张、"
+        f"向量 {len(result['removed_reference_ids'])} 条、"
+        f"档案={'删' if result['profile_removed'] else '留'}",
+        flush=True,
+    )
+    return result
 
 
 @app.post("/api/storyboard/image")

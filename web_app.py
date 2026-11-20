@@ -138,6 +138,89 @@ def _show_image(url: str, caption: str = "") -> None:
     st.image(full, caption=caption, use_container_width=True)
 
 
+def _refresh_character_views(story_id: str) -> None:
+    """重新拉取故事记忆 + 角色基准图状态，删除/生成后保持界面同步。"""
+    detail = _api("GET", f"/api/story/{story_id}", quiet=True)
+    if not detail.get("error"):
+        st.session_state.story_detail = detail
+    overview = _api("GET", f"/api/characters/{story_id}", quiet=True)
+    if not overview.get("error"):
+        st.session_state.character_overview = overview
+
+
+def _character_delete_controls(story_id: str, name: str, has_refs: bool) -> None:
+    """
+    角色卡下的删除交互：
+    - 🗑 删基准图：只清 Chroma 向量记录 + 本地基准图文件，角色卡保留，
+      之后可重新生成基准图（confirm 入库时会覆盖旧记录）；
+    - ❌ 删除角色：二次确认后连角色卡文本一起删
+      （全局档案 JSON + story_memory 角色向量），角色从角色库彻底消失。
+    """
+    col_ref, col_char = st.columns(2)
+    if col_ref.button(
+        "🗑 删基准图",
+        key=f"del_ref_{name}",
+        use_container_width=True,
+        disabled=not has_refs,
+        help="删除该角色已入库的基准图与向量记录，保留角色卡文本。",
+    ):
+        resp = _api(
+            "POST",
+            "/api/characters/delete",
+            {
+                "story_id": story_id,
+                "character_name": name,
+                "include_profile": False,
+            },
+            quiet=True,
+        )
+        if resp.get("error"):
+            st.warning(f"删除失败：{resp.get('detail')}")
+        else:
+            st.success(
+                f"已删除 {name} 的基准图 {len(resp.get('removed_files') or [])} 张，"
+                "可重新生成。"
+            )
+            _refresh_character_views(story_id)
+            st.rerun()
+    if col_char.button(
+        "❌ 删除角色",
+        key=f"del_char_{name}",
+        use_container_width=True,
+        help="彻底删除该角色：角色卡 + 基准图 + 向量库记录，不可恢复。",
+    ):
+        st.session_state.confirm_delete_char = name
+    if st.session_state.get("confirm_delete_char") == name:
+        st.warning(f"将彻底删除「{name}」：角色卡、基准图、向量库记录全部清除，不可恢复！")
+        confirm_col, cancel_col = st.columns(2)
+        if confirm_col.button(
+            "确认删除",
+            key=f"del_confirm_{name}",
+            type="primary",
+            use_container_width=True,
+        ):
+            resp = _api(
+                "POST",
+                "/api/characters/delete",
+                {
+                    "story_id": story_id,
+                    "character_name": name,
+                    "include_profile": True,
+                },
+                quiet=True,
+            )
+            st.session_state.confirm_delete_char = ""
+            if resp.get("error"):
+                st.warning(f"删除失败：{resp.get('detail')}")
+            else:
+                st.success(f"「{name}」已彻底删除。")
+                _refresh_character_views(story_id)
+                st.rerun()
+        if cancel_col.button("取消", key=f"del_cancel_{name}", use_container_width=True):
+            st.session_state.confirm_delete_char = ""
+            st.rerun()
+
+
 def _show_run_state(state: dict[str, Any]) -> None:
     if not state:
         st.info("还没有运行结果。先在上方生成或续写剧本。")
@@ -364,6 +447,7 @@ with tab_story:
                             ref_image.get("url", ""),
                             f"基准图·{ref_image.get('image_role') or 'full'}",
                         )
+                    _character_delete_controls(story_id, name, bool(refs))
         with st.expander("历史剧情摘要", expanded=False):
             for summary in detail.get("summaries") or []:
                 st.markdown(

@@ -646,6 +646,19 @@ class StoryMemoryStore:
         ]
         self.collection.delete(ids=ids)
 
+    def delete_role(self, story_id: str, name: str) -> bool:
+        """删除本故事指定姓名的角色卡；返回是否真的删除了一条记录。"""
+        name = str(name or "").strip()
+        if not name:
+            return False
+        name_hash = hashlib.sha1(name.encode("utf-8")).hexdigest()[:10]
+        doc_id = f"{story_id}:role:{name_hash}"
+        existing = self.collection.get(ids=[doc_id])
+        if not (existing.get("ids") or []):
+            return False
+        self.collection.delete(ids=[doc_id])
+        return True
+
     def replace_episode(
         self,
         story_id: str,
