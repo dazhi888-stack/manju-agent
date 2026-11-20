@@ -1863,26 +1863,29 @@ class TestCharacterDeletion(unittest.TestCase):
             config.OUTPUT_DIR = old_output
 
 
-    def test_strip_corner_watermark_crops_bottom(self) -> None:
-        from services.character_reference import strip_corner_watermark
+    def test_inpaint_watermark_keeps_full_frame(self) -> None:
+        """本地修补水印：清掉笔画但不改变尺寸（保住人物脚部）。"""
+        from services.character_reference import inpaint_watermark
 
         path = Path("outputs/_test_wm/角色_full.png")
         path.parent.mkdir(parents=True, exist_ok=True)
-        image = Image.new("RGB", (200, 400), color=(210, 215, 220))
-        # 模拟右下角平台水印（深色块）
-        for y in range(385, 400):
-            for x in range(170, 200):
-                image.putpixel((x, y), (20, 20, 20))
+        image = Image.new("RGB", (400, 800), color=(210, 215, 220))
+        # 右下角画几条中性色细笔画，模拟半透明「AI生成」水印
+        for i in range(6):
+            x = 315 + i * 12
+            for y in range(756, 784):
+                image.putpixel((x, y), (140, 142, 148))
         image.save(path, format="PNG")
         try:
-            self.assertTrue(strip_corner_watermark(path))
+            self.assertTrue(inpaint_watermark(path))
             cleaned = Image.open(path).convert("RGB")
-            self.assertEqual(cleaned.width, 200)
-            self.assertLess(cleaned.height, 400)
-            # 水印所在区域已被裁掉，底部像素恢复为纯背景色
-            self.assertEqual(cleaned.getpixel((190, cleaned.height - 1)), (210, 215, 220))
+            # 关键：尺寸完全不变，脚不会被裁
+            self.assertEqual(cleaned.size, (400, 800))
+            # 笔画位置已被修补为接近背景的平滑色
+            r, g, b = cleaned.getpixel((315, 770))
+            self.assertGreater(r, 175)
             # 文件不存在时返回 False，不抛异常
-            self.assertFalse(strip_corner_watermark(path.parent / "不存在.png"))
+            self.assertFalse(inpaint_watermark(path.parent / "不存在.png"))
         finally:
             shutil.rmtree(path.parent, ignore_errors=True)
 

@@ -446,6 +446,59 @@ def save_reference_image(story_id: str, name: str, role: str, content: bytes) ->
     return path
 
 
+def inpaint_watermark(path: str | Path) -> bool:
+    """
+    本地修补右下角「AI 生成」半透明水印，不裁画面、不调用 API、不花钱。
+
+    水印是压在人物/背景上的细笔画半透明字（Qwen-Image 平台强制）。
+    在右下角固定区域内，用「与中值滤波背景的偏差 + 近中性色」筛出细笔画
+    像素做掩膜，再用 OpenCV Telea 修补：只替换文字笔画，人物的脚、衣摆、
+    道具全部原样保留，画面尺寸不变。检测不到笔画返回 False，交给调用方降级。
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return False
+
+    file = Path(path)
+    if not file.exists():
+        return False
+    try:
+        # Windows + 中文路径：cv2.imread 打不开，必须用 fromfile + imdecode
+        image = cv2.imdecode(
+            np.fromfile(str(file), dtype=np.uint8), cv2.IMREAD_COLOR
+        )
+        if image is None:
+            return False
+        height, width = image.shape[:2]
+        x1, y1 = int(width * 0.76), int(height * 0.92)
+        x2, y2 = int(width * 0.99), int(height * 0.99)
+        roi = image[y1:y2, x1:x2]
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # 细笔画相对局部背景（中值）会有小幅度偏差
+        local_bg = cv2.medianBlur(gray, 15)
+        diff = cv2.absdiff(gray, local_bg)
+        channel_spread = roi.max(axis=2).astype(np.int16) - roi.min(axis=2).astype(np.int16)
+        neutral = channel_spread < 28
+        mask_roi = ((diff > 5) & (diff < 90) & neutral).astype(np.uint8) * 255
+        # 抗锯齿边缘一起覆盖
+        mask_roi = cv2.dilate(mask_roi, np.ones((3, 3), np.uint8), iterations=1)
+        if int(mask_roi.sum()) // 255 < 40:
+            return False
+        mask = np.zeros((height, width), np.uint8)
+        mask[y1:y2, x1:x2] = mask_roi
+        repaired = cv2.inpaint(image, mask, 3, cv2.INPAINT_TELEA)
+        # 同样用 imencode + tofile 写回，绕开中文路径
+        ok, encoded = cv2.imencode(".png", repaired)
+        if not ok:
+            return False
+        encoded.tofile(str(file))
+        return True
+    except Exception:
+        return False
+
+
 def strip_corner_watermark(path: str | Path) -> bool:
     """
     裁掉图片底部窄条，去掉平台强制的右下角「AI 生成」水印。
