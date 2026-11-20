@@ -1297,7 +1297,9 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
         from stores.global_profile import ensure_global_profile, profile_path
         from state import GlobalCharacter, GlobalProfileDraft
 
-        tmp = Path("data/_test_global_profile")
+        # 唯一临时目录：沙箱可能拦截 rmtree 导致 finally 清理失败，
+        # 固定路径会让上一轮残留把本轮的 cached 断言污染成 True。
+        tmp = Path("data") / f"_test_gp_{uuid.uuid4().hex[:6]}"
         old_data = config.DATA_DIR
         config.DATA_DIR = tmp
         draft = GlobalProfileDraft(
@@ -1332,7 +1334,7 @@ class TestGlobalAndShotPipeline(unittest.TestCase):
         from nodes.shot_generate import shot_generate_node
         from state import EpisodeShot, EpisodeShotsDraft
 
-        tmp = Path("outputs/_test_shot_generate")
+        tmp = Path("outputs") / f"test_sg_{uuid.uuid4().hex[:6]}"
         old_output = config.OUTPUT_DIR
         config.OUTPUT_DIR = tmp
         draft = EpisodeShotsDraft(
@@ -1983,6 +1985,238 @@ class TestVideoApiIntegration(unittest.TestCase):
         finally:
             config.VIDEO_API_KEY = old_key
             config.VIDEO_POLL_INTERVAL = old_interval
+
+
+class TestVideoPipeline(unittest.TestCase):
+    """整集视频流水线：计划/预算、断点续跑、缺图跳过、自动补图。"""
+
+    def _storyboard_md(self) -> str:
+        rows = "\n".join(
+            f"| {no} | 4秒 | 测试镜头{no}：角色在月下行走 | 台词{no} | 缓推 | 静谧 |"
+            for no in (1, 2, 3)
+        )
+        return (
+            "| 镜头序号 | 时长 | 画面描述 | 台词/旁白 | 镜头运镜 | 氛围备注 |\n"
+            "| --- | --- | --- | --- | --- | --- |\n" + rows
+        )
+
+    def _fake_context(self) -> dict[str, Any]:
+        return {
+            "episode_no": 1,
+            "title": "测试集",
+            "summary": "测试摘要",
+            "script": "测试剧本",
+            "storyboard": self._storyboard_md(),
+            "characters": [],
+            "character_text": "",
+        }
+
+    def _make_png(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (64, 64), (200, 180, 160)).save(path)
+
+    @staticmethod
+    def _fake_concat(content: bytes):
+        """替代 _concat_clips 的假拼接：直接写出最终文件，不跑真 ffmpeg。"""
+
+        def _concat(clips, work_dir, name):
+            work_dir.mkdir(parents=True, exist_ok=True)
+            out = work_dir / name
+            out.write_bytes(content)
+            return out
+
+        return _concat
+
+    def test_prompt_keeps_camera_and_adds_stability(self) -> None:
+        from services.pipeline import build_shot_video_prompt
+
+        prompt = build_shot_video_prompt(
+            {
+                "visual": "云舒提灯走过银月草丛",
+                "mood": "静谧",
+                "camera": "低角度跟拍",
+            },
+            "写实",
+        )
+        self.assertIn("云舒提灯走过银月草丛", prompt)
+        self.assertIn("运镜：低角度跟拍", prompt)  # 视频 prompt 保留运镜词
+        self.assertIn("首帧", prompt)  # 追加稳定性约束
+        self.assertLessEqual(len(prompt), 1000)
+
+    def test_plan_counts_existing_assets_without_spending(self) -> None:
+        import config
+        from services.pipeline import build_pipeline_plan, shot_video_path
+
+        story_id = f"pipe_plan_{uuid.uuid4().hex[:6]}"
+        tmp = Path("outputs") / story_id
+        old_output = config.OUTPUT_DIR
+        config.OUTPUT_DIR = Path("outputs")
+        try:
+            self._make_png(tmp / "images" / "img1.png")
+            (tmp / "images" / "manifest.json").write_text(
+                '{"e1_s1": {"file_name": "img1.png", "episode_no": 1, '
+                '"shot_no": 1, "style_desc": "", "confirmed_at": ""}}',
+                encoding="utf-8",
+            )
+            video2 = shot_video_path(story_id, 1, 2)
+            video2.parent.mkdir(parents=True, exist_ok=True)
+            video2.write_bytes(b"old-clip")
+
+            with patch(
+                "services.pipeline.load_episode_context",
+                return_value=self._fake_context(),
+            ):
+                plan = build_pipeline_plan(story_id, 1)
+            summary = plan["summary"]
+            self.assertEqual(summary["total_shots"], 3)
+            self.assertEqual(summary["need_image_gen"], 2)  # 镜头2/3 缺图
+            self.assertEqual(summary["reuse_video"], 1)  # 镜头2 已有片段
+            self.assertEqual(summary["need_video_gen"], 2)
+            item1 = plan["items"][0]
+            self.assertEqual(item1["image_name"], "img1.png")
+            self.assertFalse(item1["need_image_gen"])
+            self.assertEqual(plan["items"][1]["video_path"], str(video2))
+        finally:
+            config.OUTPUT_DIR = old_output
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_run_pipeline_reuses_clips_and_skips_missing_image(self) -> None:
+        import config
+        from services.pipeline import run_video_pipeline, shot_video_path
+        from services.video_gen import video_circuit_breaker
+
+        story_id = f"pipe_run_{uuid.uuid4().hex[:6]}"
+        tmp = Path("outputs") / story_id
+        old_output = config.OUTPUT_DIR
+        config.OUTPUT_DIR = Path("outputs")
+        video_circuit_breaker.reset()
+        try:
+            # 镜头1：图 + 视频片段都已有 → 复用；镜头2：只有图 → 要调视频 API
+            self._make_png(tmp / "images" / "img1.png")
+            self._make_png(tmp / "images" / "img2.png")
+            (tmp / "images" / "manifest.json").write_text(
+                '{"e1_s1": {"file_name": "img1.png", "episode_no": 1, "shot_no": 1, '
+                '"style_desc": "", "confirmed_at": ""}, '
+                '"e1_s2": {"file_name": "img2.png", "episode_no": 1, "shot_no": 2, '
+                '"style_desc": "", "confirmed_at": ""}}',
+                encoding="utf-8",
+            )
+            old_clip = shot_video_path(story_id, 1, 1)
+            old_clip.parent.mkdir(parents=True, exist_ok=True)
+            old_clip.write_bytes(b"old-clip-1")
+
+            api_calls: list[str] = []
+
+            async def fake_video(prompt, style, image_path=""):
+                api_calls.append(str(image_path))
+                return b"new-clip-bytes"
+
+            with (
+                patch(
+                    "services.pipeline.load_episode_context",
+                    return_value=self._fake_context(),
+                ),
+                patch(
+                    "services.pipeline.call_seedance_async",
+                    side_effect=fake_video,
+                ),
+                patch(
+                    "services.pipeline._probe_duration_seconds",
+                    return_value=5.0,
+                ),
+                patch(
+                    "services.pipeline._concat_clips",
+                    side_effect=self._fake_concat(b"final-video"),
+                ),
+            ):
+                report = asyncio.run(
+                    run_video_pipeline(
+                        story_id, 1, auto_gen_images=False, progress=lambda s, d: None
+                    )
+                )
+
+            self.assertEqual(report["status"], "done")
+            self.assertEqual(len(api_calls), 1)  # 只有镜头2 调了视频 API
+            self.assertEqual(api_calls[0], str(tmp / "images" / "img2.png"))
+            self.assertEqual(report["new_video_segments"], 1)
+            self.assertEqual(report["estimated_cost_yuan"], 2.5)
+            skipped = {item["shot_no"] for item in report["skipped"]}
+            self.assertEqual(skipped, {3})  # 镜头3 缺图且不自动补 → 跳过
+            self.assertEqual(
+                [item["shot_no"] for item in report["shots"]], [1, 2]
+            )
+            self.assertEqual(Path(report["output_path"]).read_bytes(), b"final-video")
+            self.assertTrue(Path(report["srt_path"]).exists())
+            # 断点续跑：镜头2 片段已落盘
+            self.assertTrue(shot_video_path(story_id, 1, 2).read_bytes() == b"new-clip-bytes")
+        finally:
+            config.OUTPUT_DIR = old_output
+            video_circuit_breaker.reset()
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_run_pipeline_auto_generates_missing_image(self) -> None:
+        import config
+        from services.pipeline import run_video_pipeline
+        from services.image_manifest import load_manifest
+        from services.video_gen import video_circuit_breaker
+
+        story_id = f"pipe_img_{uuid.uuid4().hex[:6]}"
+        tmp = Path("outputs") / story_id
+        old_output = config.OUTPUT_DIR
+        config.OUTPUT_DIR = Path("outputs")
+        video_circuit_breaker.reset()
+        try:
+            generated: list[int] = []
+
+            async def fake_image_node(state):
+                shot_no = int(state.get("shot_no") or 0)
+                generated.append(shot_no)
+                pending = tmp / "images" / "_pending" / f"shot{shot_no}.png"
+                self._make_png(pending)
+                return {"image_path": str(pending), "image_status": "done"}
+
+            async def fake_video(prompt, style, image_path=""):
+                self.assertTrue(image_path, "图生视频必须带首帧分镜图")
+                return b"clip"
+
+            with (
+                patch(
+                    "services.pipeline.load_episode_context",
+                    return_value=self._fake_context(),
+                ),
+                patch(
+                    "services.pipeline.image_gen_node",
+                    side_effect=fake_image_node,
+                ),
+                patch(
+                    "services.pipeline.call_seedance_async",
+                    side_effect=fake_video,
+                ),
+                patch(
+                    "services.pipeline._probe_duration_seconds",
+                    return_value=5.0,
+                ),
+                patch(
+                    "services.pipeline._concat_clips",
+                    side_effect=self._fake_concat(b"final"),
+                ),
+            ):
+                report = asyncio.run(
+                    run_video_pipeline(story_id, 1, shot_nos=[2])
+                )
+
+            self.assertEqual(generated, [2])
+            self.assertEqual(report["status"], "done")
+            manifest = load_manifest(story_id)
+            self.assertIn("e1_s2", manifest)  # 自动生成的图已入库绑定
+            self.assertFalse(
+                (tmp / "images" / "_pending" / "shot2.png").exists()
+            )  # 待定区 → 正式目录
+            self.assertTrue((tmp / "images" / "shot2.png").exists())
+        finally:
+            config.OUTPUT_DIR = old_output
+            video_circuit_breaker.reset()
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

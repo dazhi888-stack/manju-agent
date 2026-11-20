@@ -47,6 +47,7 @@ from services.image_manifest import bind_shot, entries_for_episode, load_manifes
 from services.compose import DEFAULT_VOICE as COMPOSE_DEFAULT_VOICE, compose_episode
 from nodes.video_prompt import build_video_prompt_node
 from services.output_writer import save_state_markdown
+from services.pipeline import build_pipeline_plan, run_video_pipeline
 from services.shot_prompt import (
     generate_shot_prompt,
     load_episode_context,
@@ -1152,3 +1153,95 @@ async def reset_video_circuit() -> dict[str, Any]:
 @app.get("/api/video/circuit")
 async def video_circuit() -> dict[str, Any]:
     return video_circuit_breaker.snapshot()
+
+
+# ===========================================================================
+# 整集视频流水线：分镜图（缺图自动补）→ 逐镜头图生视频 → 拼接成片
+# ===========================================================================
+# 后台任务表：job_id → {status, progress, report...}。
+# 一整集要跑十几分钟，HTTP 请求会超时，所以接口只负责启动任务，前端轮询进度。
+_pipeline_jobs: dict[str, dict[str, Any]] = {}
+
+
+class PipelineRequest(BaseModel):
+    """整集视频流水线参数。dry_run=True 时只算计划/预算，不花钱。"""
+
+    story_id: str
+    episode_no: int
+    shot_nos: list[int] = Field(default_factory=list)  # 空 = 整集全部镜头
+    auto_gen_images: bool = True
+    force_video: bool = False
+    dry_run: bool = False
+
+
+@app.post("/api/video/pipeline")
+async def start_video_pipeline(req: PipelineRequest) -> dict[str, Any]:
+    if int(req.episode_no or 0) <= 0:
+        raise HTTPException(status_code=422, detail="episode_no 必须为正整数")
+
+    if req.dry_run:
+        # 只读计划：不出图、不出视频、不扣额度
+        try:
+            return build_pipeline_plan(
+                req.story_id, req.episode_no, req.shot_nos or None
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+
+    job_id = uuid.uuid4().hex[:12]
+    job: dict[str, Any] = {
+        "job_id": job_id,
+        "status": "running",
+        "story_id": req.story_id,
+        "episode_no": req.episode_no,
+        "shot_nos": req.shot_nos,
+        "auto_gen_images": req.auto_gen_images,
+        "force_video": req.force_video,
+        "progress": [],
+        "created_at": time.strftime("%H:%M:%S"),
+        "report": None,
+        "error": "",
+    }
+    _pipeline_jobs[job_id] = job
+
+    def _progress(stage: str, detail: str) -> None:
+        job["progress"].append(
+            {"t": time.strftime("%H:%M:%S"), "stage": stage, "detail": detail}
+        )
+
+    async def _runner() -> None:
+        try:
+            report = await run_video_pipeline(
+                req.story_id,
+                req.episode_no,
+                shot_nos=req.shot_nos or None,
+                auto_gen_images=req.auto_gen_images,
+                force_video=req.force_video,
+                progress=_progress,
+            )
+            report["video_url"] = _media_url(str(report.get("output_path") or ""))
+            report["srt_url"] = _media_url(str(report.get("srt_path") or ""))
+            job["report"] = report
+            job["status"] = "done"
+            print(f"[视频流水线] 任务 {job_id} 完成", flush=True)
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = f"{type(exc).__name__}: {exc}"
+            print(f"[视频流水线] 任务 {job_id} 失败：{job['error']}", flush=True)
+
+    job["task"] = asyncio.create_task(_runner())
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "msg": "流水线已在后台启动，用 GET /api/video/pipeline/{job_id} 轮询进度",
+    }
+
+
+@app.get("/api/video/pipeline/{job_id}")
+async def video_pipeline_status(job_id: str) -> dict[str, Any]:
+    job = _pipeline_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"找不到任务：{job_id}")
+    return {key: value for key, value in job.items() if key != "task"}

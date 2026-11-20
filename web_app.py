@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 from datetime import datetime
 from typing import Any
@@ -952,6 +953,147 @@ with tab_video:
                     for item in skipped
                 )
             )
+
+    st.divider()
+    st.subheader("🚀 整集视频流水线（自动分镜图 → 图生视频 → 拼接）")
+    st.caption(
+        "每个镜头：缺图自动补（带角色基准图锁脸）→ MiniMax-H3 图生视频（分镜图作首帧）"
+        "→ ffmpeg 拼接成片。无背景音乐，音轨来自视频片段自带声音；字幕出外挂 srt。"
+        "烧视频额度 ¥0.5/秒；已生成的镜头片段重跑时自动复用，不重复扣费。"
+    )
+
+    def _parse_shot_range(text: str) -> list[int]:
+        """'1-12' → [1..12]；'1,3,5' → [1,3,5]；混用/留空也支持。"""
+        numbers: list[int] = []
+        for part in re.split(r"[,，;；\s]+", str(text or "").strip()):
+            if not part:
+                continue
+            span = re.fullmatch(r"(\d+)\s*[-~]\s*(\d+)", part)
+            if span:
+                numbers.extend(range(int(span.group(1)), int(span.group(2)) + 1))
+            elif part.isdigit():
+                numbers.append(int(part))
+        return sorted(set(numbers))
+
+    pipe_cols = st.columns([1, 2])
+    pipe_episode_no = pipe_cols[0].number_input(
+        "流水线集号",
+        min_value=1,
+        value=int(st.session_state.get("episode", {}).get("episode_no") or 1),
+        step=1,
+        key="pipe_episode_no",
+    )
+    pipe_range = st.text_input(
+        "镜头范围（留空 = 整集；支持 1-12 或 1,3,5）",
+        value="",
+        key="pipe_range",
+    )
+
+    pipe_btn_cols = st.columns(2)
+    pipe_preview = pipe_btn_cols[0].button("📋 预览计划（不花钱）", use_container_width=True)
+    pipe_run = pipe_btn_cols[1].button("🚀 开跑流水线", type="primary", use_container_width=True)
+
+    pipe_shot_nos = _parse_shot_range(pipe_range)
+
+    if pipe_preview:
+        plan = _api(
+            "POST",
+            "/api/video/pipeline",
+            {
+                "story_id": story_id,
+                "episode_no": int(pipe_episode_no),
+                "shot_nos": pipe_shot_nos,
+                "dry_run": True,
+            },
+        )
+        if not plan.get("error"):
+            st.session_state.pipe_plan = plan
+        else:
+            st.warning(f"预览失败：{plan.get('detail') or plan.get('error')}")
+
+    pipe_plan = st.session_state.get("pipe_plan") or {}
+    if pipe_plan.get("items") and pipe_plan.get("episode_no") == int(pipe_episode_no):
+        summary = pipe_plan.get("summary") or {}
+        st.info(
+            f"计划：{summary.get('total_shots')} 镜头"
+            f"｜需生成图 {summary.get('need_image_gen')} 张"
+            f"｜需生成视频 {summary.get('need_video_gen')} 段"
+            f"（复用 {summary.get('reuse_video')} 段）"
+            f"｜预计成本 {summary.get('estimated_cost_yuan')}"
+        )
+        st.dataframe(
+            [
+                {
+                    "镜头": item["shot_no"],
+                    "画面": item["visual"],
+                    "分镜图": item["image_name"] or "（将自动生成）",
+                    "复用已有视频": "✅" if item["reuse_video"] else "—",
+                }
+                for item in pipe_plan["items"]
+            ],
+            use_container_width=True,
+            height=240,
+        )
+
+    if pipe_run:
+        started = _api(
+            "POST",
+            "/api/video/pipeline",
+            {
+                "story_id": story_id,
+                "episode_no": int(pipe_episode_no),
+                "shot_nos": pipe_shot_nos,
+                "dry_run": False,
+            },
+        )
+        if started.get("job_id"):
+            st.session_state.pipe_job_id = started["job_id"]
+            _log(f"流水线任务已启动：{started['job_id']}")
+        else:
+            st.error(f"启动失败：{started.get('detail') or started.get('error')}")
+
+    pipe_job_id = st.session_state.get("pipe_job_id") or ""
+    if pipe_job_id:
+        job = _api("GET", f"/api/video/pipeline/{pipe_job_id}", quiet=True)
+        job_status = job.get("status") or ""
+        if job_status == "running":
+            progress_lines = job.get("progress") or []
+            with st.spinner(
+                f"流水线运行中（任务 {pipe_job_id[:8]}）… 已完成 "
+                f"{len([p for p in progress_lines if p.get('stage') == '完成' or '完成' in str(p.get('detail') or '')])} 步"
+                "，每 8 秒自动刷新"
+            ):
+                if progress_lines:
+                    latest = progress_lines[-1]
+                    st.caption(f"{latest.get('t')}｜{latest.get('stage')}：{latest.get('detail')}")
+                time.sleep(8)
+                st.rerun()
+        elif job_status == "done":
+            st.session_state.pipe_job_id = ""
+            report = job.get("report") or {}
+            st.success(
+                f"成片完成：{report.get('video_seconds')}s｜"
+                f"新生成 {report.get('new_video_segments')} 段｜"
+                f"本次花费 ≈¥{report.get('estimated_cost_yuan')}｜"
+                f"耗时 {report.get('elapsed_seconds')}s"
+            )
+            if report.get("video_url"):
+                st.video(report["video_url"])
+                st.markdown(f"[⬇️ 下载成片 mp4]({report['video_url']})")
+            if report.get("srt_url"):
+                st.markdown(f"[⬇️ 外挂字幕 srt]({report['srt_url']})")
+            skipped = report.get("skipped") or []
+            if skipped:
+                st.caption(
+                    "跳过的镜头："
+                    + "；".join(
+                        f"#{item.get('shot_no')}（{str(item.get('reason'))[:80]}）"
+                        for item in skipped
+                    )
+                )
+        elif job_status == "failed":
+            st.session_state.pipe_job_id = ""
+            st.error(f"流水线失败：{job.get('error')}")
 
     st.subheader("Seedance 文生视频")
     st.info(
