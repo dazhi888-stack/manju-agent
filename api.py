@@ -620,7 +620,8 @@ async def generate_character_reference(req: CharacterGenerateRequest) -> dict[st
                     use_prompt,
                     base.negative_prompt
                     + "，裸露，半裸，赤裸，无衣物，双人，多人，拼图，多视图，"
-                    "三视图，角色设定图，转身图，背面图，重复人物",
+                    "三视图，角色设定图，转身图，背面图，重复人物，"
+                    "人物不完整，脚部出画，裁切构图，半身像，特写",
                     req.style_desc or config.DEFAULT_STYLE_DESC,
                     # 基准图走更高质量的 Qwen-Image（人像明显好于 Turbo）。
                     image_size=config.IMAGE_REF_SIZE,
