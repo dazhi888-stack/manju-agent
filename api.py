@@ -33,6 +33,7 @@ from services.character_reference import (
     reference_block as character_reference_block,
     save_character_reference,
     save_reference_image,
+    strip_corner_watermark,
 )
 from graph import graph
 from stores.global_profile import (
@@ -639,6 +640,9 @@ async def generate_character_reference(req: CharacterGenerateRequest) -> dict[st
         if content is None:
             raise last_error or RuntimeError("角色基准图接口没有返回图片")
         path = save_reference_image(req.story_id, base.name, role, content)
+        # Qwen-Image 平台强制在右下角加「AI生成」水印（watermark=False 无效），
+        # 基准图是纯色背景，本地无痕覆盖即可，避免水印串进图生图参考。
+        strip_corner_watermark(path)
         images.append(
             {
                 "role": "full",

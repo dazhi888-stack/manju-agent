@@ -446,6 +446,29 @@ def save_reference_image(story_id: str, name: str, role: str, content: bytes) ->
     return path
 
 
+def strip_corner_watermark(path: str | Path) -> bool:
+    """
+    裁掉图片底部窄条，去掉平台强制的右下角「AI 生成」水印。
+
+    Qwen-Image 的 watermark=False 实测无效（平台强制加水印）。基准图是
+    「干净纯色背景 + 人物」，底部 4.5% 基本是背景/脚部末端，直接裁掉最干净：
+    不烧钱重出、不留拼接色块，也不会把水印喂给下游图生图参考。
+    """
+    file = Path(path)
+    if not file.exists():
+        return False
+    try:
+        image = Image.open(file).convert("RGB")
+    except Exception:
+        return False
+    width, height = image.size
+    cut = max(1, int(height * 0.045))
+    if cut >= height:
+        return False
+    image.crop((0, 0, width, height - cut)).save(file, format="PNG")
+    return True
+
+
 def save_reference_views(story_id: str, name: str, content: bytes) -> list[Path]:
     """一次生成全身图，再裁成单人半身；多视图输出也只保留中央正面。"""
     from io import BytesIO

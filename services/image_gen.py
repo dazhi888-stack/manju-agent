@@ -188,13 +188,13 @@ async def external_image_api(
             "prompt": positive_prompt,
             "negative_prompt": negative_prompt,
             "image_size": image_size or config.IMAGE_SIZE,
+            # 硅基流动平台级参数：False = 关闭右下角"AI 生成"水印。
+            # 基准图带水印会干扰后续图生图参考，必须关；接口不认识会自动忽略。
+            "watermark": False,
         }
         if not model_override:
-            # 默认 Turbo 路径保留这些字段；覆盖模型时不发，避免字段不兼容被拒。
+            # 默认 Turbo 路径保留 batch_size；覆盖模型时不发，避免字段不兼容被拒。
             payload["batch_size"] = 1
-            # 硅基流动支持该参数：False = 关闭右下角"AI 生成"水印。
-            # 接口如果不认识这个字段会自动忽略，不影响兼容性。
-            payload["watermark"] = False
         return payload
 
     headers = {"Authorization": f"Bearer {config.IMAGE_API_KEY}"}

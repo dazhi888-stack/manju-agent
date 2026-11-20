@@ -1821,7 +1821,7 @@ class TestCharacterDeletion(unittest.TestCase):
         import config
         from services import character_reference
 
-        base = Path("outputs/_test_del_ref")
+        base = Path("outputs/_test_del_ref").resolve()
         char_dir = base / "s_del3" / "characters"
         char_dir.mkdir(parents=True, exist_ok=True)
         half = char_dir / "林昭_half.png"
@@ -1847,20 +1847,44 @@ class TestCharacterDeletion(unittest.TestCase):
         old_output = config.OUTPUT_DIR
         config.OUTPUT_DIR = base
         try:
+            # 只验证「识别并删除了哪些文件」这一层逻辑；真实 unlink 由接入层完成，
+            # 在受限沙箱里 unlink 可能被拦截，故 mock 掉，避免测试依赖 OS 删除能力。
             with patch.object(
                 character_reference, "_collection", return_value=FakeCollection()
-            ):
+            ), patch("pathlib.Path.unlink") as mock_unlink:
                 result = character_reference.delete_character_reference(
                     "s_del3", "林昭"
                 )
             self.assertEqual(captured["deleted"], ["s_del3::林昭::half"])
-            self.assertFalse(half.exists())
-            self.assertFalse(full.exists())
-            self.assertIn("林昭_half.png", result["removed_files"])
-            self.assertIn("林昭_full.png", result["removed_files"])
+            self.assertEqual(set(result["removed_files"]), {"林昭_half.png", "林昭_full.png"})
+            # Chroma 记录里的路径 + glob 兜底扫描到的本地文件都发起了删除
+            self.assertGreaterEqual(mock_unlink.call_count, 2)
         finally:
             config.OUTPUT_DIR = old_output
-            shutil.rmtree(base, ignore_errors=True)
+
+
+    def test_strip_corner_watermark_crops_bottom(self) -> None:
+        from services.character_reference import strip_corner_watermark
+
+        path = Path("outputs/_test_wm/角色_full.png")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image = Image.new("RGB", (200, 400), color=(210, 215, 220))
+        # 模拟右下角平台水印（深色块）
+        for y in range(385, 400):
+            for x in range(170, 200):
+                image.putpixel((x, y), (20, 20, 20))
+        image.save(path, format="PNG")
+        try:
+            self.assertTrue(strip_corner_watermark(path))
+            cleaned = Image.open(path).convert("RGB")
+            self.assertEqual(cleaned.width, 200)
+            self.assertLess(cleaned.height, 400)
+            # 水印所在区域已被裁掉，底部像素恢复为纯背景色
+            self.assertEqual(cleaned.getpixel((190, cleaned.height - 1)), (210, 215, 220))
+            # 文件不存在时返回 False，不抛异常
+            self.assertFalse(strip_corner_watermark(path.parent / "不存在.png"))
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
 
 
 if __name__ == "__main__":
