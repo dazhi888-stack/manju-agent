@@ -118,31 +118,144 @@ video_circuit_breaker = CircuitBreaker(
 
 
 # ===========================================================================
-# 二、Seedance 异步 API 接入位置（故意留空）
+# 二、视频异步 API（硅基流动 MiniMax-H3 图生视频）
 # ===========================================================================
 class VideoApiError(RuntimeError):
-    """视频接口错误/未接入异常。"""
+    """视频接口错误异常（由节点捕获并走 fail_degrade）。"""
 
 
-@traceable(run_type="tool", name="seedance_async_api")
+def _post_json_sync(url: str, payload: dict, key: str) -> tuple[int, bytes]:
+    """同步 POST JSON；返回 (http状态码, 响应体)。放在线程里跑，不阻塞事件循环。"""
+    import json
+    import urllib.error
+    import urllib.request
+
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            # 0 = 关闭显式「AI 生成」水印（下游还会做合成/剪辑）。
+            "X-Enable-Watermark": "0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+def _encode_first_frame(image_path: str) -> str:
+    """把本地分镜图缩放/转 JPEG 后编码成 base64 data URL，作首帧参考图。"""
+    import base64
+    import io
+
+    from PIL import Image
+
+    file = Path(image_path)
+    image = Image.open(file).convert("RGB")
+    width, height = image.size
+    max_edge = config.VIDEO_FIRST_FRAME_MAX_EDGE
+    scale = min(1.0, max_edge / max(width, height))
+    if scale < 1.0:
+        image = image.resize((int(width * scale), int(height * scale)))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=88)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+
+@traceable(run_type="tool", name="video_async_api")
 async def call_seedance_async(
     positive_prompt: str,
     style_desc: str,
     image_path: str = "",
 ) -> bytes:
     """
-    ===== 在这里填写 Seedance 异步 API 调用代码 =====
+    硅基流动 MiniMax-H3 图生视频（异步）。
 
-    当前故意不接入模型，直接抛 VideoApiError：
-    - 视频节点会捕获异常并走 fail_degrade；
-    - 提示词保存到 outputs/{story_id}/；
-    - Web 页面必须兼容“视频还没接入、只能降级输出提示词”。
+    流程：POST /video/submit 拿 requestId → 轮询 POST /video/status，
+    status=Succeed 时从 results.videos[0].url 下载 mp4 二进制返回。
 
-    接入时只需要让本函数返回视频二进制 bytes，熔断/降级/文件保存都不需要改。
+    - 传入 image_path 时作为首帧参考图（first_frame），锁定角色长相/服装；
+      不传则退化为纯文生视频。
+    - 视频自带立体声音轨，下载后即是可直接拼接的 mp4。
+    - 任一环节失败抛 VideoApiError，由 video_gen_node 捕获走 fail_degrade
+      （保存提示词、记录熔断失败），不拖垮整条流水线。
+
+    函数名保留 call_seedance_async 是为了不改动节点调用方；
+    底层实际走硅基流动，Seedance（火山方舟）当前未启用。
     """
-    raise VideoApiError(
-        "Seedance 尚未接入：请在 video_gen.call_seedance_async 中填写真实异步 API"
+    import asyncio
+    import json
+    import time
+    import urllib.request
+
+    if not config.VIDEO_API_KEY:
+        raise VideoApiError("未配置视频 API Key（VIDEO_API_KEY / IMAGE_API_KEY）")
+
+    payload: dict[str, Any] = {
+        "model": config.VIDEO_API_MODEL,
+        "prompt": (positive_prompt or style_desc or "画面轻微运动，镜头稳定")[:1000],
+        "duration": config.VIDEO_DURATION,
+        "resolution": config.VIDEO_RESOLUTION,
+    }
+    if image_path and Path(image_path).exists():
+        payload["images"] = [
+            {"url": _encode_first_frame(image_path), "role": "first_frame"}
+        ]
+
+    # ① 提交任务
+    status_code, raw = await asyncio.to_thread(
+        _post_json_sync, config.VIDEO_SUBMIT_URL, payload, config.VIDEO_API_KEY
     )
+    if status_code != 200:
+        raise VideoApiError(
+            f"submit {status_code}: {raw.decode('utf-8', 'ignore')[:300]}"
+        )
+    try:
+        request_id = (json.loads(raw.decode("utf-8", "ignore")) or {}).get("requestId")
+    except Exception:
+        request_id = None
+    if not request_id:
+        raise VideoApiError("submit 未返回 requestId")
+
+    # ② 轮询状态
+    deadline = time.monotonic() + config.VIDEO_TIMEOUT_SECONDS
+    video_url = ""
+    while time.monotonic() < deadline:
+        await asyncio.sleep(config.VIDEO_POLL_INTERVAL)
+        code, body = await asyncio.to_thread(
+            _post_json_sync,
+            config.VIDEO_STATUS_URL,
+            {"requestId": request_id},
+            config.VIDEO_API_KEY,
+        )
+        if code != 200:
+            continue  # 轮询偶发错误，下一轮再试
+        data = json.loads(body.decode("utf-8", "ignore")) or {}
+        state = data.get("status")
+        if state == "Succeed":
+            videos = (data.get("results") or {}).get("videos") or []
+            video_url = (videos[0] or {}).get("url", "") if videos else ""
+            break
+        if state == "Failed":
+            raise VideoApiError(f"生成失败：{data.get('reason') or '未知原因'}")
+    if not video_url:
+        raise VideoApiError("轮询超时或未返回视频 URL")
+
+    # ③ 下载视频（URL 有效期 1 小时，立即取回 bytes）
+    def _download() -> bytes:
+        with urllib.request.urlopen(video_url, timeout=180) as response:
+            return response.read()
+
+    content = await asyncio.to_thread(_download)
+    if not content:
+        raise VideoApiError("下载到的视频为空")
+    return content
 
 
 # ===========================================================================
@@ -241,9 +354,11 @@ async def video_gen_node(
             f"熔断器状态={circuit_state}，冷却中，拦截本次请求",
         )
 
-    # ③ 调用 Seedance；失败进入降级并记录熔断失败。
+    # ③ 调用视频模型；把已生成的分镜图作为首帧（图生视频锁角色）。
+    #    没有图时 API 内部自动退化为纯文生视频。
+    image_path = str(state.get("image_path") or "").strip()
     try:
-        content = await call_seedance_async(prompt, style)
+        content = await call_seedance_async(prompt, style, image_path=image_path)
         path = _save_video(state, content)
         video_circuit_breaker.record_success()
         msg = f"视频生成成功：{path}"
@@ -260,7 +375,7 @@ async def video_gen_node(
             state,
             prompt,
             "fail_degrade",
-            f"Seedance 调用失败：{type(exc).__name__}: {exc}",
+            f"视频模型调用失败：{type(exc).__name__}: {exc}",
         )
 
 

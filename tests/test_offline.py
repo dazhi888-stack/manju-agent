@@ -1890,5 +1890,100 @@ class TestCharacterDeletion(unittest.TestCase):
             shutil.rmtree(path.parent, ignore_errors=True)
 
 
+class TestVideoApiIntegration(unittest.TestCase):
+    """验证 MiniMax-H3 真实调用逻辑（submit→轮询→下载），全部 mock，不烧额度。"""
+
+    def test_encode_first_frame_returns_jpeg_data_url(self) -> None:
+        from services.video_gen import _encode_first_frame
+
+        path = Path("outputs/_test_vid_api/frame.png")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (1920, 1080), color=(120, 130, 140)).save(path, format="PNG")
+        try:
+            url = _encode_first_frame(str(path))
+            self.assertTrue(url.startswith("data:image/jpeg;base64,"))
+            # 缩放后应小于原图边长上限
+            import base64
+            import io
+
+            raw = base64.b64decode(url.split(",", 1)[1])
+            w, h = Image.open(io.BytesIO(raw)).size
+            self.assertLessEqual(max(w, h), 1280)
+        finally:
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    def test_submit_poll_download_with_first_frame(self) -> None:
+        import config
+        import services.video_gen as vg
+
+        old_key = config.VIDEO_API_KEY
+        old_interval = config.VIDEO_POLL_INTERVAL
+        config.VIDEO_API_KEY = "sk-test"
+        config.VIDEO_POLL_INTERVAL = 0
+        captured: dict = {}
+
+        def fake_post(url, payload, key):
+            if url == config.VIDEO_SUBMIT_URL:
+                captured["submit"] = payload
+                return 200, b'{"requestId":"req-1"}'
+            return 200, (
+                b'{"status":"Succeed","results":{"videos":'
+                b'[{"url":"https://example.com/v.mp4"}]}}'
+            )
+
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"FAKE_MP4_BYTES"
+
+        path = Path("outputs/_test_vid_api2/frame.png")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (640, 360)).save(path, format="PNG")
+        try:
+            with patch.object(vg, "_post_json_sync", side_effect=fake_post), patch(
+                "urllib.request.urlopen", return_value=FakeResponse()
+            ):
+                result = asyncio.run(
+                    vg.call_seedance_async("镜头缓推", "写实", image_path=str(path))
+                )
+            self.assertEqual(result, b"FAKE_MP4_BYTES")
+            submit = captured["submit"]
+            self.assertEqual(submit["model"], config.VIDEO_API_MODEL)
+            self.assertEqual(submit["images"][0]["role"], "first_frame")
+            self.assertTrue(
+                submit["images"][0]["url"].startswith("data:image/jpeg;base64,")
+            )
+        finally:
+            config.VIDEO_API_KEY = old_key
+            config.VIDEO_POLL_INTERVAL = old_interval
+            shutil.rmtree(path.parent, ignore_errors=True)
+
+    def test_failed_status_raises(self) -> None:
+        import config
+        import services.video_gen as vg
+
+        old_key = config.VIDEO_API_KEY
+        old_interval = config.VIDEO_POLL_INTERVAL
+        config.VIDEO_API_KEY = "sk-test"
+        config.VIDEO_POLL_INTERVAL = 0
+        try:
+            def fake_post(url, payload, key):
+                if url == config.VIDEO_SUBMIT_URL:
+                    return 200, b'{"requestId":"req-x"}'
+                return 200, b'{"status":"Failed","reason":"NSFW"}'
+
+            with patch.object(vg, "_post_json_sync", side_effect=fake_post):
+                with self.assertRaises(vg.VideoApiError):
+                    asyncio.run(vg.call_seedance_async("test", "写实"))
+        finally:
+            config.VIDEO_API_KEY = old_key
+            config.VIDEO_POLL_INTERVAL = old_interval
+
+
 if __name__ == "__main__":
     unittest.main()

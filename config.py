@@ -155,7 +155,31 @@ IMAGE_REVIEW_USE_LLM = _env_bool("IMAGE_REVIEW_USE_LLM", True)
 # 过大会触发图片服务商限流（429），默认 3 是稳妥值。
 IMAGE_BATCH_CONCURRENCY = _env_int("IMAGE_BATCH_CONCURRENCY", 3)
 
-# 视频：Seedance（火山方舟）
+# 视频：硅基流动 MiniMax-H3 图生视频（异步 submit + status 轮询）。
+# 背景：火山方舟 Seedance 需充值 200 才激活，暂不接；原计划的
+# Wan2.1-I2V 已被平台下线（Model disabled），当前账户唯一可用视频模型是
+# MiniMaxAI/MiniMax-H3（¥0.5/秒，5 秒段 = ¥2.5，自带立体声音轨）。
+# 复用 IMAGE_API_KEY（同一硅基流动账户、同一 Key），无需另配。
+VIDEO_SUBMIT_URL = (
+    os.getenv("VIDEO_SUBMIT_URL")
+    or "https://api.siliconflow.cn/v1/video/submit"
+).strip()
+VIDEO_STATUS_URL = (
+    os.getenv("VIDEO_STATUS_URL")
+    or "https://api.siliconflow.cn/v1/video/status"
+).strip()
+VIDEO_API_KEY = (os.getenv("VIDEO_API_KEY") or IMAGE_API_KEY).strip()
+VIDEO_API_MODEL = (
+    os.getenv("VIDEO_API_MODEL") or "MiniMaxAI/MiniMax-H3"
+).strip()
+VIDEO_DURATION = _env_int("VIDEO_DURATION", 5)  # 5~15 秒，按秒计费
+VIDEO_RESOLUTION = (os.getenv("VIDEO_RESOLUTION") or "768p").strip()
+VIDEO_POLL_INTERVAL = _env_float("VIDEO_POLL_INTERVAL", 8.0)
+VIDEO_TIMEOUT_SECONDS = _env_float("VIDEO_TIMEOUT_SECONDS", 420.0)
+# 首帧图先缩到长边 1280 并转 JPEG，避免 base64 过大被接口拒收。
+VIDEO_FIRST_FRAME_MAX_EDGE = _env_int("VIDEO_FIRST_FRAME_MAX_EDGE", 1280)
+
+# 保留旧 Seedance 配置以兼容（当前未启用）。
 SEEDANCE_API_KEY = (
     os.getenv("SEEDANCE_KEY") or os.getenv("SEEDANCE_API_KEY") or ""
 ).strip()

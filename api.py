@@ -162,6 +162,8 @@ class VideoRequest(BaseModel):
     prompt: str = ""
     style_desc: str = ""
     enable_video: bool = True
+    # 首帧分镜图路径。留空时自动取该集最新一张分镜图（图生视频锁角色）。
+    first_frame: str = ""
 
 
 class VideoPromptRequest(BaseModel):
@@ -389,7 +391,8 @@ async def health() -> dict[str, Any]:
     return {
         "ok": True,
         "image_model": config.IMAGE_API_MODEL,
-        "video_model": config.SEEDANCE_MODEL,
+        "video_model": config.VIDEO_API_MODEL,
+        "video_enabled": config.VIDEO_GEN_ENABLED,
         "circuit": video_circuit_breaker.snapshot(),
     }
 
@@ -1092,6 +1095,20 @@ async def generate_video(req: VideoRequest) -> dict[str, Any]:
     ref_block = character_reference_block(req.story_id)
     if ref_block and "@Image" not in prompt:
         prompt = ref_block + "\n" + prompt
+
+    # 首帧图：优先用显式指定；否则取该集 images 目录最新一张正式分镜图
+    # （排除 _pending 待定区），让视频从「已锁定角色的画面」开始。
+    first_frame = req.first_frame.strip()
+    if not first_frame:
+        image_dir = config.OUTPUT_DIR / req.story_id / "images"
+        if image_dir.exists():
+            candidates = [
+                p for p in image_dir.glob("*.png")
+                if "_pending" not in str(p)
+            ]
+            if candidates:
+                first_frame = str(max(candidates, key=lambda p: p.stat().st_mtime))
+
     state: ComicState = {
         "story_id": req.story_id,
         "episode_no": (
@@ -1100,6 +1117,7 @@ async def generate_video(req: VideoRequest) -> dict[str, Any]:
         "style_desc": req.style_desc or config.DEFAULT_STYLE_DESC,
         "video_prompt": prompt,
         "image_prompt_positive": prompt,
+        "image_path": first_frame,
         "enable_video": bool(req.enable_video),
     }
     try:
